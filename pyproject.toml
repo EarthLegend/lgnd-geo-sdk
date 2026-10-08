@@ -1,6 +1,6 @@
 [project]
 name = "lgnd-geo-sdk"
-version = "0.1.0b1"
+version = "0.1.0"
 description = "The Python SDK for LGND Geo: its tools for AI agents and your own code"
 readme = "README.md"
 requires-python = ">=3.13"
