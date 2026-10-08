@@ -1,0 +1,77 @@
+# The documentation site: `make docs-serve` to preview, `make docs` to build. The API reference
+# is generated from the docstrings (mkdocstrings); the docs workflow publishes to GitHub Pages.
+site_name: lgnd-geo-sdk
+site_description: "The Python SDK for LGND Geo: its tools for AI agents and your own code"
+site_author: LGND
+site_url: https://earthlegend.github.io/lgnd-geo-sdk/
+repo_url: https://github.com/EarthLegend/lgnd-geo-sdk
+repo_name: EarthLegend/lgnd-geo-sdk
+
+nav:
+  - index.md
+  - User Guide:
+      - getting-started.md
+      - authentication.md
+  - Examples:
+      - Pydantic AI:
+          - examples/pydantic-ai/energy-analyst.md
+          - examples/pydantic-ai/regional-planner.md
+  - API Reference:
+      - api/core.md
+      - api/pydantic-ai.md
+
+watch:
+  - src
+  - examples
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      primary: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: default
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - content.code.copy
+    - navigation.indexes
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_section_style: list
+            docstring_style: google
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_source: false
+            show_symbol_type_toc: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  # `--8<-- "examples/..."` includes an example as it is in the repo, where the tests run it.
+  - pymdownx.snippets:
+      check_paths: true
+  - toc:
+      permalink: true

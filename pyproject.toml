@@ -1,0 +1,82 @@
+[project]
+name = "lgnd-geo-sdk"
+version = "0.1.0b1"
+description = "The Python SDK for LGND Geo: its tools for AI agents and your own code"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "LGND", email = "david@lgnd.ai" }]
+keywords = ["mcp", "agents", "ai", "geospatial", "pydantic-ai", "lgnd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastmcp-slim[client]>=4.0.10",
+]
+
+[project.urls]
+Repository = "https://github.com/EarthLegend/lgnd-geo-sdk"
+Issues = "https://github.com/EarthLegend/lgnd-geo-sdk/issues"
+
+[project.optional-dependencies]
+pydantic-ai = [
+    "pydantic-ai-slim[mcp]>=2.52.0",
+]
+
+[dependency-groups]
+dev = [
+    "fastmcp-slim[server]>=4.0.10",
+    "pydantic-ai-slim[anthropic,mcp]>=2.52.0",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "pre-commit>=4.6.2",
+]
+docs = [
+    "mkdocs>=1.6.1,<2",
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
+]
+
+[tool.uv]
+# The docs tools are installed with the dev ones, so `uv run` keeps `make docs-serve` working.
+default-groups = ["dev", "docs"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lgnd_geo_sdk"]
+
+# The sdist carries what a downstream packager needs to build and read the package, not our
+# CI or tooling.
+[tool.hatch.build.targets.sdist]
+include = ["src/lgnd_geo_sdk", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src"]
+
+[tool.ruff.lint]
+# D: Google-style docstrings on every public module, class and function (they are the API
+# reference). ANN: type hints on every signature. `__init__` arguments are documented on the
+# class, as Google style does; `Any` is allowed for JSON values.
+select = ["E", "F", "I", "UP", "B", "SIM", "ARG", "RUF", "D", "ANN"]
+ignore = ["RUF012", "D105", "D107", "ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501", "E731", "ARG", "D", "ANN"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

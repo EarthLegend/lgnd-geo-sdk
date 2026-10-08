@@ -1,0 +1,70 @@
+# `v*` tags publish to PyPI; `test-v*` tags publish the same build to TestPyPI, to rehearse the
+# pipeline without spending a real version number. Either way the tag (minus any `test-`) must
+# match the version in pyproject.toml.
+# Uses Trusted Publishing (OIDC), so there is no token to store. One-off setup, on each index
+# (accounts are separate): add a pending publisher for this repo, workflow `release.yml`,
+# environment `pypi` (pypi.org) or `testpypi` (test.pypi.org). Make the `pypi` GitHub
+# environment require a reviewer.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "test-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install
+      - name: Tag matches pyproject version
+        run: |
+          version=$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          tag="${GITHUB_REF_NAME#test-}"
+          test "v$version" = "$tag" || { echo "tag $GITHUB_REF_NAME does not match v$version"; exit 1; }
+      - run: uv build
+      - name: Smoke test the wheel in a clean environment
+        run: |
+          uv venv --python 3.13 /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/python -c "from lgnd_geo_sdk import auth, client; print('ok')"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    if: startsWith(github.ref_name, 'test-v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always
+
+  publish-pypi:
+    if: startsWith(github.ref_name, 'v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv publish --trusted-publishing always
