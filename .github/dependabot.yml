@@ -1,0 +1,12 @@
+# Keeps the locked dependencies and the SHA-pinned actions current; security fixes come as
+# their own PRs on top of these weekly ones.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
