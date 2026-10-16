@@ -28,7 +28,7 @@ jobs:
         with:
           fetch-depth: 0 # to check the tag against main's history
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv python install
       # A real release ships only reviewed code: the tagged commit must already be on main.
       # test-v* rehearsals may come from any branch.
@@ -70,7 +70,7 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always
 
   publish-pypi:
@@ -85,5 +85,5 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv publish --trusted-publishing always
