@@ -1,0 +1,80 @@
+# Security checks on every PR. This package ships to customers, so a leaked secret or a
+# malicious dependency would reach them too. The secret scan matches the one the org runs on
+# its private repos; keep the pinned versions and checksums in step with it.
+name: Checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: secret-scan / gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      # Only the commits this PR adds; a secret added and then removed still fails, because
+      # it was pushed.
+      - name: Scan the PR's commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          "$RUNNER_TEMP/gitleaks" git . --log-opts="--no-merges $BASE_SHA..$HEAD_SHA" \
+            --max-decode-depth 3 --redact --no-banner --verbose --exit-code 1
+
+  osv-scan:
+    name: osv-scan / osv-scanner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OSV_SCANNER_VERSION: 2.6.0
+      OSV_SCANNER_SHA256: ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install osv-scanner
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+      # Fails on a known-malicious package (an OSV MAL- id, directly or as an alias). Other
+      # known vulnerabilities are listed in the job summary; Dependabot raises fixes for those.
+      - name: Scan uv.lock
+        run: |
+          rc=0
+          "$RUNNER_TEMP/osv-scanner" scan source --format json --output-file "$RUNNER_TEMP/osv.json" . || rc=$?
+          case "$rc" in 0|1) ;; *) echo "osv-scanner failed (exit $rc)"; exit "$rc" ;; esac
+          rows='[.results[].packages[] | .package as $p | .vulnerabilities[]?
+                 | {name: $p.name, version: $p.version, id: .id, summary: (.summary // ""),
+                    malicious: ([.id] + (.aliases // []) | any(startswith("MAL-")))}]'
+          jq "$rows" "$RUNNER_TEMP/osv.json" > "$RUNNER_TEMP/rows.json"
+          {
+            echo "## Dependency scan"
+            echo
+            if [ "$(jq length "$RUNNER_TEMP/rows.json")" -eq 0 ]; then
+              echo "✅ No known vulnerabilities or malicious packages."
+            else
+              echo "| | Package | Version | Advisory | Summary |"
+              echo "|---|---|---|---|---|"
+              jq -r '.[] | "| \(if .malicious then "🔴 malicious" else "⚠️" end) | `\(.name)` | \(.version) | \(.id) | \(.summary | gsub("\\|"; "/")) |"' "$RUNNER_TEMP/rows.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$(jq '[.[] | select(.malicious)] | length' "$RUNNER_TEMP/rows.json")" -eq 0 ]
