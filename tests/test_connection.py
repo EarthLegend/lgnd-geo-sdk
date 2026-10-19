@@ -237,6 +237,9 @@ async def test_a_machine_user_gets_its_token_at_the_authorization_servers_token_
     assert sent[-1].headers["Authorization"] == "Bearer fresh"
 
 
+DEVICE_ENDPOINT = f"{AUTHORIZATION_SERVER}/oauth2/device_authorization"
+
+
 def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2.MockTransport:
     """Return the servers for a device sign-in that the person confirms after `pending` polls."""
     polls = 0
@@ -301,9 +304,6 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
         raise httpx2.ConnectError(f"unexpected request to {request.url}", request=request)
 
     return httpx2.MockTransport(respond)
-
-
-DEVICE_ENDPOINT = f"{AUTHORIZATION_SERVER}/oauth2/device_authorization"
 
 
 async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_confirmed(

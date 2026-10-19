@@ -29,18 +29,18 @@ from mcp.client.auth.utils import (
 
 URL_ENVIRONMENT_VARIABLE = "LGND_GEO_MCP_URL"
 """The environment variable that overrides the server URL."""
-CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_ID"
-"""The environment variable holding a machine user's client id."""
-CLIENT_SECRET_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_SECRET"
-"""The environment variable holding a machine user's client secret."""
 DEFAULT_URL = "https://geo.lgnd.ai/mcp"
 """The server URL used when none is given: LGND Geo's MCP server."""
+SIGN_IN_TIMEOUT_SECONDS = 300.0
+"""How long connecting waits for the browser or device sign-in to finish."""
 SIGN_IN_ENVIRONMENT_VARIABLE = "LGND_GEO_SIGN_IN"
 """The environment variable that picks the sign-in: `browser` or `device`."""
 DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_DEVICE_CLIENT_ID"
 """The environment variable naming the OAuth client a device sign-in uses, for another server."""
-SIGN_IN_TIMEOUT_SECONDS = 300.0
-"""How long connecting waits for the browser or device sign-in to finish."""
+CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_ID"
+"""The environment variable holding a machine user's client id."""
+CLIENT_SECRET_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_SECRET"
+"""The environment variable holding a machine user's client secret."""
 
 _DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 # The OAuth client each server's device sign-in uses, by server URL. The authorization server
@@ -162,38 +162,42 @@ class _DeviceOAuth(_OAuth):
                     outgoing = await flow.asend(response)
                 except StopAsyncIteration:
                     return
-                signed_in, self._signed_in = self._signed_in, None
-                if signed_in is not None and outgoing is signed_in.request:
-                    response = signed_in
+                if self._signed_in is not None and outgoing is self._signed_in.request:
+                    response, self._signed_in = self._signed_in, None
                 else:
                     response = yield outgoing
 
     async def _perform_authorization(self) -> httpx2.Request:
         async with self.httpx_client_factory() as http:
-            self._signed_in = await self._sign_in_on_another_device(http)
+            grant = await self._start_device_sign_in(http)
+            link = grant.get("verification_uri_complete") or grant["verification_uri"]
+            print(
+                f"To sign in to LGND Geo, open {link} and confirm the code {grant['user_code']}.",
+                flush=True,
+            )
+            self._signed_in = await self._poll_until_confirmed(http, grant)
         return self._signed_in.request
 
-    async def _sign_in_on_another_device(self, http: httpx2.AsyncClient) -> httpx2.Response:
-        """Print the link and code, then return the token endpoint's answer once confirmed."""
+    async def _start_device_sign_in(self, http: httpx2.AsyncClient) -> dict:
+        """The device authorization response: the codes, the link and how often to poll."""
         context = self.context
-        client_id = context.client_info.client_id
-        start = {"client_id": client_id}
+        start = {"client_id": context.client_info.client_id}
         if context.client_metadata.scope:
             start["scope"] = context.client_metadata.scope
         if context.should_include_resource_param(context.protocol_version):
             start["resource"] = context.get_resource_url()
-        started = await http.post(await self._device_authorization_endpoint(http), data=start)
-        if started.status_code != 200:
-            raise OAuthTokenError(f"Device sign-in could not start ({started.status_code})")
-        grant = started.json()
-        link = grant.get("verification_uri_complete") or grant["verification_uri"]
-        print(
-            f"To sign in to LGND Geo, open {link} and confirm the code {grant['user_code']}.",
-            flush=True,
-        )
+        response = await http.post(await self._device_authorization_endpoint(http), data=start)
+        if response.status_code != 200:
+            raise OAuthTokenError(f"Device sign-in could not start ({response.status_code})")
+        return response.json()
 
-        poll = {"grant_type": _DEVICE_CODE_GRANT, "device_code": grant["device_code"]}
-        poll["client_id"] = client_id
+    async def _poll_until_confirmed(self, http: httpx2.AsyncClient, grant: dict) -> httpx2.Response:
+        """The token endpoint's answer once the person confirms the code (RFC 8628 §3.4-3.5)."""
+        poll = {
+            "grant_type": _DEVICE_CODE_GRANT,
+            "device_code": grant["device_code"],
+            "client_id": self.context.client_info.client_id,
+        }
         interval = grant.get("interval", 5)
         timeout = min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
         with anyio.move_on_after(timeout):
@@ -203,9 +207,10 @@ class _DeviceOAuth(_OAuth):
                     response = await http.post(self._get_token_endpoint(), data=poll)
                     if response.status_code == 200:
                         return response
-                    error = response.json().get("error")
-                except (httpx2.HTTPError, ValueError, AttributeError):
-                    error = None  # A dropped request or an unreadable answer: poll again.
+                    body = response.json()
+                except (httpx2.HTTPError, ValueError):
+                    continue  # A dropped request or an unreadable answer: poll again.
+                error = body.get("error") if isinstance(body, dict) else None
                 if error == "slow_down":
                     interval += 5
                 elif error not in (None, "authorization_pending"):
@@ -214,7 +219,11 @@ class _DeviceOAuth(_OAuth):
         raise OAuthTokenError("Device sign-in was not confirmed in time, or was denied")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:
-        """The `device_authorization_endpoint` of the authorization server's metadata."""
+        """The `device_authorization_endpoint` of the authorization server's metadata.
+
+        Fetched again because the `mcp` SDK's metadata model, which the flow already holds, drops
+        this field.
+        """
         for url in build_oauth_authorization_server_metadata_discovery_urls(
             self.context.auth_server_url, self.context.server_url
         ):
@@ -234,6 +243,22 @@ def _signs_in_on_another_device() -> bool:
             f"{SIGN_IN_ENVIRONMENT_VARIABLE} must be 'browser' or 'device', not {choice!r}"
         )
     return choice == "device" or (choice is None and "google.colab" in sys.modules)
+
+
+def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
+    """The machine user's sign-in, if `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` are set."""
+    client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
+    client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
+    if client_id and client_secret:
+        return ClientCredentialsOAuthProvider(
+            mcp_url, client_id=client_id, client_secret=client_secret
+        )
+    if client_id or client_secret:
+        raise ValueError(
+            f"set both {CLIENT_ID_ENVIRONMENT_VARIABLE} and {CLIENT_SECRET_ENVIRONMENT_VARIABLE} "
+            "to sign in as a machine user, or neither to sign in as a person"
+        )
+    return None
 
 
 def _device_client_id(mcp_url: str) -> str:
@@ -264,7 +289,7 @@ def auth(
 
     Args:
         url: The MCP server URL. Defaults to `server_url()`.
-        token_directory: Where browser sign-in tokens are stored. Defaults to
+        token_directory: Where a person's sign-in tokens are stored. Defaults to
             `default_token_directory()`.
 
     Returns:
@@ -277,17 +302,8 @@ def auth(
             client for the server.
     """
     mcp_url = server_url(url)
-    client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
-    client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
-    if client_id and client_secret:
-        return ClientCredentialsOAuthProvider(
-            mcp_url, client_id=client_id, client_secret=client_secret
-        )
-    if client_id or client_secret:
-        raise ValueError(
-            f"set both {CLIENT_ID_ENVIRONMENT_VARIABLE} and {CLIENT_SECRET_ENVIRONMENT_VARIABLE} "
-            "to sign in as a machine user, or neither to sign in through the browser"
-        )
+    if machine_user := _machine_user(mcp_url):
+        return machine_user
     # The browser sign-in registers a client of its own (`client_id=None`); the device sign-in
     # uses the server's fixed one.
     device_client_id = _device_client_id(mcp_url) if _signs_in_on_another_device() else None
@@ -319,8 +335,8 @@ def client(url: str | None = None, *, token_directory: Path | None = None) -> Cl
             `default_token_directory()`.
 
     Returns:
-        The client. It connects when entered (`async with`), signing in through the browser the
-        first time unless a machine user's credentials are set; see `auth`.
+        The client. It connects when entered (`async with`), signing in the first time; see
+        `auth`.
 
     Example:
         ```python
@@ -332,6 +348,6 @@ def client(url: str | None = None, *, token_directory: Path | None = None) -> Cl
     return Client(
         server_url(url),
         auth=auth(url, token_directory=token_directory),
-        # The browser sign-in runs inside the connect handshake.
+        # A person's sign-in runs inside the connect handshake.
         init_timeout=SIGN_IN_TIMEOUT_SECONDS,
     )
