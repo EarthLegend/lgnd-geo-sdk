@@ -143,7 +143,10 @@ class _Pending(Exception):
 
 
 def _requested_interval(retry_state: RetryCallState) -> float:
-    """How long to wait before polling again: the interval the authorization server asked for."""
+    """How long to wait before polling again: the interval the authorization server asked for.
+
+    `poll` keeps it on its instance, the call's first argument, and raises it on `slow_down`.
+    """
     return retry_state.args[0]._poll_interval
 
 
@@ -215,7 +218,7 @@ class _DeviceOAuth(_OAuth):
         return response.json()
 
     @retry(
-        # Not yet confirmed, a dropped request, or an unreadable answer: poll again.
+        # Not yet confirmed, a dropped request, a server error or an unreadable answer: poll again.
         retry=retry_if_exception_type((_Pending, httpx2.HTTPError)),
         wait=_requested_interval,
         stop=stop_after_delay(SIGN_IN_TIMEOUT_SECONDS),
@@ -232,6 +235,8 @@ class _DeviceOAuth(_OAuth):
         response = await http.post(self._get_token_endpoint(), data=form)
         if response.status_code == 200:
             return response
+        if response.status_code >= 500:
+            raise _Pending
         try:
             body = response.json()
         except ValueError:

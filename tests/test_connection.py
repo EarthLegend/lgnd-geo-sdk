@@ -248,12 +248,28 @@ async def test_a_machine_user_gets_its_token_at_the_authorization_servers_token_
 DEVICE_ENDPOINT = f"{AUTHORIZATION_SERVER}/oauth2/device_authorization"
 
 
-def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2.MockTransport:
-    """Return the servers for a device sign-in that the person confirms after `pending` polls."""
-    polls = 0
+TOKENS = httpx2.Response(
+    200,
+    json={
+        "access_token": "device-token",
+        "refresh_token": "refresh",
+        "token_type": "Bearer",
+        "expires_in": 300,
+    },
+)
+
+
+def token_error(error: str, status: int = 400) -> httpx2.Response:
+    return httpx2.Response(status, json={"error": error})
+
+
+def device_sign_in_server(
+    sent: list[httpx2.Request], *, polls: list[httpx2.Response]
+) -> httpx2.MockTransport:
+    """Return the servers for a device sign-in whose token endpoint answers `polls` in turn."""
+    answers = iter(polls)
 
     def respond(request: httpx2.Request) -> httpx2.Response:
-        nonlocal polls
         sent.append(request)
         match str(request.url):
             case "https://geo.test/.well-known/oauth-protected-resource/mcp":
@@ -293,22 +309,7 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
                     },
                 )
             case "https://auth.test/oauth2/token":
-                polls += 1
-                if polls == 1:
-                    return httpx2.Response(503, text="upstream unavailable")
-                if polls == 2:
-                    return httpx2.Response(400, json={"error": "slow_down"})
-                if polls <= pending:
-                    return httpx2.Response(400, json={"error": "authorization_pending"})
-                return httpx2.Response(
-                    200,
-                    json={
-                        "access_token": "device-token",
-                        "refresh_token": "refresh",
-                        "token_type": "Bearer",
-                        "expires_in": 300,
-                    },
-                )
+                return next(answers)
             case "https://geo.test/mcp":
                 return httpx2.Response(200 if "Authorization" in request.headers else 401)
         raise httpx2.ConnectError(f"unexpected request to {request.url}", request=request)
@@ -316,26 +317,43 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
     return httpx2.MockTransport(respond)
 
 
-async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_confirmed(
-    tmp_path, monkeypatch, capsys
-):
+async def sign_in_on_another_device(
+    tmp_path, monkeypatch, polls: list[httpx2.Response]
+) -> tuple[OAuth, list[httpx2.Request], httpx2.Response]:
+    """Connect with a device sign-in whose token endpoint answers `polls` in turn."""
     monkeypatch.setattr("lgnd_geo_sdk.connection._SLOW_DOWN_SECONDS", 0)
     monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
     monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
     sent: list[httpx2.Request] = []
-    transport = device_sign_in_server(sent, pending=4)
+    transport = device_sign_in_server(sent, polls=polls)
     credential = auth(MCP_URL, token_directory=tmp_path)
     credential.httpx_client_factory = lambda: httpx2.AsyncClient(transport=transport)
-
     async with httpx2.AsyncClient(transport=transport, auth=credential) as http:
         response = await http.get(MCP_URL)
+    return credential, sent, response
+
+
+async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_confirmed(
+    tmp_path, monkeypatch, capsys
+):
+    credential, sent, response = await sign_in_on_another_device(
+        tmp_path,
+        monkeypatch,
+        polls=[
+            httpx2.Response(503, text="upstream unavailable"),
+            token_error("temporarily_unavailable", status=503),
+            token_error("slow_down"),
+            token_error("authorization_pending"),
+            TOKENS,
+        ],
+    )
 
     started = next(r for r in sent if str(r.url) == DEVICE_ENDPOINT)
     polls = [r for r in sent if str(r.url) == TOKEN_ENDPOINT]
     assert response.status_code == 200
     assert sent[-1].headers["Authorization"] == "Bearer device-token"
     assert b"resource=https%3A%2F%2Fgeo.test%2Fmcp" in started.content
-    assert len(polls) == 5  # an unreadable 503, slow_down, two pending, then the tokens
+    assert len(polls) == 5
     assert all(b"device_code=device-secret" in poll.content for poll in polls)
     assert all(b"client_id=client_sdk" in r.content for r in [started, *polls])
     assert not [r for r in sent if r.url.path == "/oauth2/register"]
@@ -414,33 +432,10 @@ def test_the_token_directory_may_be_a_string(tmp_path, monkeypatch, sign_in):
     assert (tmp_path / "tokens").is_dir()
 
 
-async def test_a_denied_device_sign_in_stops_polling(tmp_path, monkeypatch):
-    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
-    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
-    credential = auth(MCP_URL, token_directory=tmp_path)
-    polls: list[httpx2.Request] = []
-
-    def deny(request: httpx2.Request) -> httpx2.Response:
-        polls.append(request)
-        return httpx2.Response(400, json={"error": "access_denied"})
-
-    await credential._initialize()
-    credential._get_token_endpoint = lambda: TOKEN_ENDPOINT
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(deny)) as http:
-        with pytest.raises(OAuthTokenError, match="access_denied"):
-            await credential.poll(http, "device-secret")
-
-    assert len(polls) == 1
-
-
-async def test_an_expired_device_code_says_it_was_not_confirmed(tmp_path, monkeypatch):
-    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
-    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
-    credential = auth(MCP_URL, token_directory=tmp_path)
-    await credential._initialize()
-    credential._get_token_endpoint = lambda: TOKEN_ENDPOINT
-    expired = httpx2.MockTransport(lambda _: httpx2.Response(400, json={"error": "expired_token"}))
-
-    async with httpx2.AsyncClient(transport=expired) as http:
-        with pytest.raises(OAuthTokenError, match="not confirmed in time"):
-            await credential.poll(http, "device-secret")
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [("access_denied", "access_denied"), ("expired_token", "not confirmed in time")],
+)
+async def test_a_device_sign_in_stops_at_an_error(tmp_path, monkeypatch, error, message):
+    with pytest.raises(OAuthTokenError, match=message):
+        await sign_in_on_another_device(tmp_path, monkeypatch, polls=[token_error(error)])
