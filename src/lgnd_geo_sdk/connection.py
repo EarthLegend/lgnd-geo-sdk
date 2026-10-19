@@ -4,6 +4,7 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from enum import StrEnum
 from pathlib import Path
 from typing import NoReturn
 
@@ -138,6 +139,14 @@ class _OAuth(OAuth):
                     break
 
 
+class _DeviceError(StrEnum):
+    """The token endpoint's errors that a device sign-in acts on (RFC 8628 §3.5)."""
+
+    AUTHORIZATION_PENDING = "authorization_pending"
+    SLOW_DOWN = "slow_down"
+    EXPIRED_TOKEN = "expired_token"
+
+
 class _Pending(Exception):
     """The person has not confirmed the device sign-in's code yet: poll again."""
 
@@ -242,13 +251,16 @@ class _DeviceOAuth(_OAuth):
         except ValueError:
             body = None
         error = body.get("error") if isinstance(body, dict) else None
-        if error == "slow_down":
-            self._poll_interval += _SLOW_DOWN_SECONDS  # §3.5: for this and every later poll
-        if error in (None, "authorization_pending", "slow_down"):  # None: an unreadable answer
-            raise _Pending
-        if error == "expired_token":
-            raise OAuthTokenError(_NOT_CONFIRMED)
-        raise OAuthTokenError(f"Device sign-in failed: {error}")
+        match error:
+            case _DeviceError.SLOW_DOWN:
+                self._poll_interval += _SLOW_DOWN_SECONDS  # §3.5: for this and every later poll
+                raise _Pending
+            case None | _DeviceError.AUTHORIZATION_PENDING:  # None: an unreadable answer
+                raise _Pending
+            case _DeviceError.EXPIRED_TOKEN:
+                raise OAuthTokenError(_NOT_CONFIRMED)
+            case _:
+                raise OAuthTokenError(f"Device sign-in failed: {error}")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:
         """The `device_authorization_endpoint` of the authorization server's metadata.
