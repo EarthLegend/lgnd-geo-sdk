@@ -29,8 +29,8 @@ def toolset(url: str | None = None, *, token_directory: str | Path | None = None
             `lgnd_geo_sdk.default_token_directory()`.
 
     Returns:
-        The toolset, to pass to `pydantic_ai.Agent(toolsets=[...])`. It signs in through the
-        browser the first time; see `lgnd_geo_sdk.auth`.
+        The toolset, to pass to `pydantic_ai.Agent(toolsets=[...])`. It signs in the first time;
+        see `lgnd_geo_sdk.auth`.
 
     Example:
         ```python

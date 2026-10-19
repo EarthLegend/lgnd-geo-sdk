@@ -260,13 +260,30 @@ TOKENS = httpx2.Response(
 
 
 def token_error(error: str, status: int = 400) -> httpx2.Response:
+    """Return a token endpoint error.
+
+    Args:
+        error: The error code, such as `authorization_pending`.
+        status: The HTTP status.
+
+    Returns:
+        The response.
+    """
     return httpx2.Response(status, json={"error": error})
 
 
 def device_sign_in_server(
     sent: list[httpx2.Request], *, polls: list[httpx2.Response]
 ) -> httpx2.MockTransport:
-    """Return the servers for a device sign-in whose token endpoint answers `polls` in turn."""
+    """Return the servers for a device sign-in, recording each request.
+
+    Args:
+        sent: Where each request the servers receive is appended.
+        polls: The token endpoint's answers, in turn.
+
+    Returns:
+        The transport serving the MCP server and its authorization server.
+    """
     answers = iter(polls)
 
     def respond(request: httpx2.Request) -> httpx2.Response:
@@ -320,7 +337,16 @@ def device_sign_in_server(
 async def sign_in_on_another_device(
     tmp_path, monkeypatch, polls: list[httpx2.Response]
 ) -> tuple[OAuth, list[httpx2.Request], httpx2.Response]:
-    """Connect with a device sign-in whose token endpoint answers `polls` in turn."""
+    """Connect with a device sign-in.
+
+    Args:
+        tmp_path: The token directory.
+        monkeypatch: Sets the environment for a device sign-in.
+        polls: The token endpoint's answers, in turn.
+
+    Returns:
+        The sign-in, the requests sent, and the MCP server's answer once signed in.
+    """
     monkeypatch.setattr("lgnd_geo_sdk.connection._SLOW_DOWN_SECONDS", 0)
     monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
     monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")

@@ -152,9 +152,15 @@ class _Pending(Exception):
 
 
 def _requested_interval(retry_state: RetryCallState) -> float:
-    """How long to wait before polling again: the interval the authorization server asked for.
+    """Return how long to wait before polling again: the interval the server asked for.
 
-    `poll` keeps it on its instance, the call's first argument, and raises it on `slow_down`.
+    `poll` keeps the interval on its instance and raises it on `slow_down`.
+
+    Args:
+        retry_state: The state of a `poll` call; its first argument is the instance.
+
+    Returns:
+        The seconds to wait.
     """
     return retry_state.args[0]._poll_interval
 
@@ -164,6 +170,14 @@ _NOT_CONFIRMED = "Device sign-in was not confirmed in time, or was denied"
 
 
 def _not_confirmed(retry_state: RetryCallState) -> NoReturn:
+    """Stop polling once the device sign-in has run out of time.
+
+    Args:
+        retry_state: The state of the `poll` call that ran out of time.
+
+    Raises:
+        OAuthTokenError: Always: the code was not confirmed in time, or was denied.
+    """
     raise OAuthTokenError(_NOT_CONFIRMED) from retry_state.outcome.exception()
 
 
@@ -183,11 +197,17 @@ class _DeviceOAuth(_OAuth):
     async def async_auth_flow(
         self, request: httpx2.Request
     ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
-        """`_OAuth`'s flow, answering the device sign-in's token request with its own response.
+        """Run `_OAuth`'s flow, answering the device sign-in's token request with its response.
 
         The base flow sends the token request `_perform_authorization` returns and processes the
         answer. A device code is good for one exchange, which the polling has already made, so
         that request is not sent again: its response goes straight back into the flow.
+
+        Args:
+            request: The request to sign.
+
+        Yields:
+            The requests to send, ending with `request` signed.
         """
         async with aclosing(super().async_auth_flow(request)) as flow:
             response = None
@@ -202,6 +222,12 @@ class _DeviceOAuth(_OAuth):
                     response = yield outgoing
 
     async def _perform_authorization(self) -> httpx2.Request:
+        """Sign in on another device: print the link and code, then poll until confirmed.
+
+        Returns:
+            The token request whose response holds the tokens; `async_auth_flow` hands that
+            response back without sending the request again.
+        """
         async with self.httpx_client_factory() as http:
             grant = await self._start_device_sign_in(http)
             link = grant.get("verification_uri_complete") or grant["verification_uri"]
@@ -214,7 +240,18 @@ class _DeviceOAuth(_OAuth):
         return self._signed_in.request
 
     async def _start_device_sign_in(self, http: httpx2.AsyncClient) -> dict:
-        """The device authorization response: the codes, the link and how often to poll."""
+        """Start a device sign-in at the authorization server.
+
+        Args:
+            http: The client to send the request with.
+
+        Returns:
+            The device authorization response: the codes, the link and how often to poll.
+
+        Raises:
+            OAuthTokenError: The authorization server does not offer device sign-in, or refused
+                to start one.
+        """
         context = self.context
         start = {"client_id": context.client_info.client_id}
         if context.client_metadata.scope:
@@ -235,7 +272,22 @@ class _DeviceOAuth(_OAuth):
         retry_error_callback=_not_confirmed,
     )
     async def poll(self, http: httpx2.AsyncClient, device_code: str) -> httpx2.Response:
-        """Ask the token endpoint for the tokens until the person confirms the code (RFC 8628)."""
+        """Ask the token endpoint for the tokens until the person confirms the code (RFC 8628).
+
+        One call is one request; `@retry` polls again on `_Pending`, a dropped request or a
+        server error, waiting the interval the server asked for.
+
+        Args:
+            http: The client to send the requests with.
+            device_code: The device code from `_start_device_sign_in`.
+
+        Returns:
+            The token endpoint's response once the code is confirmed.
+
+        Raises:
+            OAuthTokenError: The sign-in was denied, the code expired, or the server answered an
+                error the device sign-in does not expect.
+        """
         form = {
             "grant_type": _DEVICE_CODE_GRANT,
             "device_code": device_code,
@@ -263,10 +315,19 @@ class _DeviceOAuth(_OAuth):
                 raise OAuthTokenError(f"Device sign-in failed: {error}")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:
-        """The `device_authorization_endpoint` of the authorization server's metadata.
+        """Return the `device_authorization_endpoint` of the authorization server's metadata.
 
-        Fetched again because the `mcp` SDK's metadata model, which the flow already holds, drops
-        this field.
+        The metadata is fetched again because the `mcp` SDK's metadata model, which the flow
+        already holds, drops this field.
+
+        Args:
+            http: The client to fetch the metadata with.
+
+        Returns:
+            The URL to start a device sign-in at.
+
+        Raises:
+            OAuthTokenError: The authorization server does not offer device sign-in.
         """
         for url in build_oauth_authorization_server_metadata_discovery_urls(
             self.context.auth_server_url, self.context.server_url
@@ -280,7 +341,14 @@ class _DeviceOAuth(_OAuth):
 
 
 def _signs_in_on_another_device() -> bool:
-    """Whether to sign in on another device: `LGND_GEO_SIGN_IN`, else only in Colab."""
+    """Return whether to sign in on another device rather than through the browser.
+
+    Returns:
+        True if `LGND_GEO_SIGN_IN` is `device`, or if it is unset and this runs in Colab.
+
+    Raises:
+        ValueError: `LGND_GEO_SIGN_IN` is neither `browser` nor `device`.
+    """
     choice = os.environ.get(SIGN_IN_ENVIRONMENT_VARIABLE)
     if choice not in (None, "browser", "device"):
         raise ValueError(
@@ -290,7 +358,18 @@ def _signs_in_on_another_device() -> bool:
 
 
 def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
-    """The machine user's sign-in, if `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` are set."""
+    """Return the machine user's sign-in, if its credentials are set.
+
+    Args:
+        mcp_url: The MCP server URL.
+
+    Returns:
+        The client-credentials sign-in if `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` are
+        both set, else None.
+
+    Raises:
+        ValueError: Only one of the two is set.
+    """
     client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
     client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
     if client_id and client_secret:
@@ -308,7 +387,17 @@ def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
 
 
 def _device_client_id(mcp_url: str) -> str:
-    """The OAuth client a device sign-in to `mcp_url` uses: the environment's, or LGND's."""
+    """Return the OAuth client a device sign-in to `mcp_url` uses.
+
+    Args:
+        mcp_url: The MCP server URL.
+
+    Returns:
+        `LGND_GEO_DEVICE_CLIENT_ID` if set, else LGND's client for that server.
+
+    Raises:
+        ValueError: Neither is known for `mcp_url`.
+    """
     configured = os.environ.get(DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE)
     client_id = configured or _DEVICE_CLIENT_IDS.get(mcp_url)
     if not client_id:
