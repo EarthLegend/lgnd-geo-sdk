@@ -98,8 +98,9 @@ def test_the_client_signs_in_to_the_server(tmp_path, monkeypatch):
 
 
 def test_connecting_the_client_waits_for_the_browser_sign_in(tmp_path):
-    # The sign-in happens during the MCP handshake; a short connect timeout cuts it off.
-    assert client(token_directory=tmp_path)._init_timeout == SIGN_IN_TIMEOUT_SECONDS
+    # The sign-in happens during the MCP handshake; a short connect timeout cuts it off, and one
+    # no longer than the sign-in's hides its "not confirmed in time" behind a generic error.
+    assert client(token_directory=tmp_path)._init_timeout > SIGN_IN_TIMEOUT_SECONDS
 
 
 # A sign-in server for the refresh tests: LGND Geo's MCP server names its authorization server in
