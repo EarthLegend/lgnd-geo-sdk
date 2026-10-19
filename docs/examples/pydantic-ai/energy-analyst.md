@@ -11,5 +11,5 @@ python examples/pydantic_ai/energy_analyst.py "Find solar farms built in central
 ```
 
 ```python
---8<-- "examples/pydantic_ai/energy_analyst.py"
+--8 < --"examples/pydantic_ai/energy_analyst.py"
 ```

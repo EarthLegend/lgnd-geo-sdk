@@ -1,8 +1,9 @@
 """The core: which server, the sign-in, where its tokens are kept, and the client."""
 
 import httpx2
+import pytest
 from fastmcp import Client
-from fastmcp.client.auth import OAuth
+from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import FileTreeStore
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
@@ -195,3 +196,39 @@ async def test_a_sign_in_from_another_authorization_server_is_not_refreshed(tmp_
     assert credential.context.current_tokens is None
     assert credential.context.client_info is None
     assert not [r for r in sent if r.method == "POST"]
+
+
+def test_a_machine_users_credentials_sign_in_without_the_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_CLIENT_ID", "client_m2m")
+    monkeypatch.setenv("LGND_GEO_CLIENT_SECRET", "secret")
+
+    credential = auth(MCP_URL, token_directory=tmp_path / "tokens")
+
+    assert isinstance(credential, ClientCredentialsOAuthProvider)
+    assert not (tmp_path / "tokens").exists()
+
+
+@pytest.mark.parametrize("name", ["LGND_GEO_CLIENT_ID", "LGND_GEO_CLIENT_SECRET"])
+def test_half_a_machine_users_credentials_is_refused(tmp_path, monkeypatch, name):
+    monkeypatch.setenv(name, "set")
+
+    with pytest.raises(ValueError, match="set both"):
+        auth(token_directory=tmp_path)
+
+
+async def test_a_machine_user_gets_its_token_at_the_authorization_servers_token_endpoint(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LGND_GEO_CLIENT_ID", "client_m2m")
+    monkeypatch.setenv("LGND_GEO_CLIENT_SECRET", "secret")
+    sent: list[httpx2.Request] = []
+
+    credential = auth(MCP_URL, token_directory=tmp_path)
+    async with httpx2.AsyncClient(transport=sign_in_server(sent), auth=credential) as http:
+        response = await http.get(MCP_URL)
+
+    token_request = next(r for r in sent if r.method == "POST")
+    assert response.status_code == 200
+    assert str(token_request.url) == TOKEN_ENDPOINT
+    assert b"grant_type=client_credentials" in token_request.content
+    assert sent[-1].headers["Authorization"] == "Bearer fresh"

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from fastmcp import Client
-from fastmcp.client.auth import OAuth
+from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import (
     FileTreeStore,
     FileTreeV1CollectionSanitizationStrategy,
@@ -23,6 +23,10 @@ from mcp.client.auth.utils import (
 
 URL_ENVIRONMENT_VARIABLE = "LGND_GEO_MCP_URL"
 """The environment variable that overrides the server URL."""
+CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_ID"
+"""The environment variable holding a machine user's client id."""
+CLIENT_SECRET_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_SECRET"
+"""The environment variable holding a machine user's client secret."""
 DEFAULT_URL = "https://geo.lgnd.ai/mcp"
 """The server URL used when none is given: LGND Geo's MCP server."""
 SIGN_IN_TIMEOUT_SECONDS = 300.0
@@ -114,21 +118,41 @@ class _OAuth(OAuth):
                     break
 
 
-def auth(url: str | None = None, *, token_directory: Path | None = None) -> OAuth:
+def auth(
+    url: str | None = None, *, token_directory: Path | None = None
+) -> OAuth | ClientCredentialsOAuthProvider:
     """Return the sign-in to LGND Geo's MCP server.
 
-    This is the OAuth 2.1 sign-in: the first run opens the browser, and the tokens are stored in
-    `token_directory`, so later runs sign in without it.
+    With `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` set, this signs in as that machine
+    user: the OAuth client-credentials grant, with no browser, for scripts, CI and hosted
+    notebooks. Its tokens are kept in memory; a new one is a single request.
+
+    Otherwise this is the OAuth 2.1 browser sign-in: the first run opens the browser, and the
+    tokens are stored in `token_directory`, so later runs sign in without it.
 
     Args:
         url: The MCP server URL. Defaults to `server_url()`.
-        token_directory: Where sign-in tokens are stored. Defaults to
+        token_directory: Where browser sign-in tokens are stored. Defaults to
             `default_token_directory()`.
 
     Returns:
-        A FastMCP `OAuth`: an `httpx2.Auth` that any MCP client on the `mcp` 2 SDK can sign in
-        with.
+        A FastMCP `OAuth` or `ClientCredentialsOAuthProvider`: an `httpx2.Auth` that any MCP
+        client on the `mcp` 2 SDK can sign in with.
+
+    Raises:
+        ValueError: Only one of `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` is set.
     """
+    client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
+    client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
+    if client_id and client_secret:
+        return ClientCredentialsOAuthProvider(
+            server_url(url), client_id=client_id, client_secret=client_secret
+        )
+    if client_id or client_secret:
+        raise ValueError(
+            f"set both {CLIENT_ID_ENVIRONMENT_VARIABLE} and {CLIENT_SECRET_ENVIRONMENT_VARIABLE} "
+            "to sign in as a machine user, or neither to sign in through the browser"
+        )
     directory = token_directory or default_token_directory()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     return _OAuth(
@@ -154,7 +178,7 @@ def client(url: str | None = None, *, token_directory: Path | None = None) -> Cl
 
     Returns:
         The client. It connects when entered (`async with`), signing in through the browser the
-        first time; see `auth`.
+        first time unless a machine user's credentials are set; see `auth`.
 
     Example:
         ```python
