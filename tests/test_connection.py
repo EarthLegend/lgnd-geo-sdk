@@ -8,6 +8,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import FileTreeStore
+from mcp.client.auth import OAuthTokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from lgnd_geo_sdk import (
@@ -295,6 +296,8 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
                 polls += 1
                 if polls == 1:
                     return httpx2.Response(503, text="upstream unavailable")
+                if polls == 2:
+                    return httpx2.Response(400, json={"error": "slow_down"})
                 if polls <= pending:
                     return httpx2.Response(400, json={"error": "authorization_pending"})
                 return httpx2.Response(
@@ -316,10 +319,11 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
 async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_confirmed(
     tmp_path, monkeypatch, capsys
 ):
+    monkeypatch.setattr("lgnd_geo_sdk.connection._SLOW_DOWN_SECONDS", 0)
     monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
     monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
     sent: list[httpx2.Request] = []
-    transport = device_sign_in_server(sent, pending=3)
+    transport = device_sign_in_server(sent, pending=4)
     credential = auth(MCP_URL, token_directory=tmp_path)
     credential.httpx_client_factory = lambda: httpx2.AsyncClient(transport=transport)
 
@@ -331,7 +335,7 @@ async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_
     assert response.status_code == 200
     assert sent[-1].headers["Authorization"] == "Bearer device-token"
     assert b"resource=https%3A%2F%2Fgeo.test%2Fmcp" in started.content
-    assert len(polls) == 4  # an unreadable 503, two pending, then the tokens
+    assert len(polls) == 5  # an unreadable 503, slow_down, two pending, then the tokens
     assert all(b"device_code=device-secret" in poll.content for poll in polls)
     assert all(b"client_id=client_sdk" in r.content for r in [started, *polls])
     assert not [r for r in sent if r.url.path == "/oauth2/register"]
@@ -408,3 +412,24 @@ def test_the_token_directory_may_be_a_string(tmp_path, monkeypatch, sign_in):
     auth(MCP_URL, token_directory=str(tmp_path / "tokens"))
 
     assert (tmp_path / "tokens").is_dir()
+
+
+async def test_a_denied_device_sign_in_stops_polling(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+    credential = auth(MCP_URL, token_directory=tmp_path)
+    polls: list[httpx2.Request] = []
+
+    def deny(request: httpx2.Request) -> httpx2.Response:
+        polls.append(request)
+        return httpx2.Response(400, json={"error": "access_denied"})
+
+    await credential._initialize()
+    credential._get_token_endpoint = lambda: TOKEN_ENDPOINT
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(deny)) as http:
+        with pytest.raises(OAuthTokenError, match="access_denied"):
+            await credential._poll_until_confirmed(
+                http, {"device_code": "device-secret", "interval": 0, "expires_in": 60}
+            )
+
+    assert len(polls) == 1

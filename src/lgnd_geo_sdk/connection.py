@@ -26,6 +26,7 @@ from mcp.client.auth.utils import (
     issuers_match,
     validate_metadata_issuer,
 )
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type, stop_after_delay
 
 URL_ENVIRONMENT_VARIABLE = "LGND_GEO_MCP_URL"
 """The environment variable that overrides the server URL."""
@@ -43,6 +44,8 @@ CLIENT_SECRET_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_SECRET"
 """The environment variable holding a machine user's client secret."""
 
 _DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+_SLOW_DOWN_SECONDS = 5
+"""How much longer to wait between polls after each `slow_down` (RFC 8628 §3.5)."""
 # The OAuth client each server's device sign-in uses, by server URL. The authorization server
 # allows the device grant only to a client registered for it by LGND, not to one a client
 # registers for itself.
@@ -134,6 +137,14 @@ class _OAuth(OAuth):
                     break
 
 
+class _Pending(Exception):
+    """The person has not confirmed the device sign-in's code yet: poll again."""
+
+
+class _SlowDown(_Pending):
+    """As `_Pending`, and the authorization server asks to poll less often."""
+
+
 class _DeviceOAuth(_OAuth):
     """`_OAuth`, signing in on another device (RFC 8628) instead of through a local browser.
 
@@ -199,24 +210,47 @@ class _DeviceOAuth(_OAuth):
             "client_id": self.context.client_info.client_id,
         }
         interval = grant.get("interval", 5)
-        timeout = min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
-        with anyio.move_on_after(timeout):
-            while True:
-                await anyio.sleep(interval)
-                try:
-                    response = await http.post(self._get_token_endpoint(), data=poll)
-                    if response.status_code == 200:
-                        return response
-                    body = response.json()
-                except (httpx2.HTTPError, ValueError):
-                    continue  # A dropped request or an unreadable answer: poll again.
-                error = body.get("error") if isinstance(body, dict) else None
-                if error == "slow_down":
-                    interval += 5
-                elif error not in (None, "authorization_pending"):
-                    raise OAuthTokenError(f"Device sign-in failed: {error}")
-        # The authorization server answers a denied code as still pending, until it expires.
-        raise OAuthTokenError("Device sign-in was not confirmed in time, or was denied")
+        slow_downs = 0
+
+        def wait(retry_state: RetryCallState) -> float:
+            nonlocal slow_downs
+            if isinstance(retry_state.outcome.exception(), _SlowDown):
+                slow_downs += 1
+            return interval + _SLOW_DOWN_SECONDS * slow_downs
+
+        retrying = AsyncRetrying(
+            # Not yet confirmed, a dropped request, or an unreadable answer: poll again.
+            retry=retry_if_exception_type((_Pending, httpx2.HTTPError)),
+            wait=wait,
+            stop=stop_after_delay(
+                min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
+            ),
+            sleep=anyio.sleep,
+            reraise=True,
+        )
+        try:
+            return await retrying(self._poll, http, poll)
+        except (_Pending, httpx2.HTTPError) as exc:
+            # The authorization server answers a denied code as still pending, until it expires.
+            raise OAuthTokenError(
+                "Device sign-in was not confirmed in time, or was denied"
+            ) from exc
+
+    async def _poll(self, http: httpx2.AsyncClient, poll: dict) -> httpx2.Response:
+        """One poll: the tokens, `_Pending` to poll again, or `OAuthTokenError` to stop."""
+        response = await http.post(self._get_token_endpoint(), data=poll)
+        if response.status_code == 200:
+            return response
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        error = body.get("error") if isinstance(body, dict) else None
+        if error == "slow_down":
+            raise _SlowDown
+        if error in (None, "authorization_pending"):  # None: an unreadable answer
+            raise _Pending
+        raise OAuthTokenError(f"Device sign-in failed: {error}")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:
         """The `device_authorization_endpoint` of the authorization server's metadata.
