@@ -116,7 +116,13 @@ def sign_in_server(sent: list[httpx2.Request]) -> httpx2.MockTransport:
         match str(request.url):
             case "https://geo.test/.well-known/oauth-protected-resource/mcp":
                 return httpx2.Response(
-                    200, json={"resource": MCP_URL, "authorization_servers": [AUTHORIZATION_SERVER]}
+                    200,
+                    json={
+                        "resource": MCP_URL,
+                        "authorization_servers": [AUTHORIZATION_SERVER],
+                        # As LGND Geo advertises them: a person's scopes.
+                        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+                    },
                 )
             case "https://auth.test/.well-known/oauth-authorization-server":
                 return httpx2.Response(
@@ -234,6 +240,7 @@ async def test_a_machine_user_gets_its_token_at_the_authorization_servers_token_
     assert response.status_code == 200
     assert str(token_request.url) == TOKEN_ENDPOINT
     assert b"grant_type=client_credentials" in token_request.content
+    assert b"scope" not in token_request.content  # a person's scopes are refused to a machine
     assert sent[-1].headers["Authorization"] == "Bearer fresh"
 
 

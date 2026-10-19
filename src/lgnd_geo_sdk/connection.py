@@ -250,8 +250,10 @@ def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
     client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
     client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
     if client_id and client_secret:
+        # No scopes: the server advertises a person's (`openid`, `email`, ...), which the
+        # authorization server refuses to a machine (`invalid_scope`), and an empty set is not sent.
         return ClientCredentialsOAuthProvider(
-            mcp_url, client_id=client_id, client_secret=client_secret
+            mcp_url, client_id=client_id, client_secret=client_secret, scopes=""
         )
     if client_id or client_secret:
         raise ValueError(
