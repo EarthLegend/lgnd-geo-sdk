@@ -3,7 +3,6 @@
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 import anyio
 import httpx2
@@ -143,9 +142,7 @@ class _DeviceOAuth(_OAuth):
     registers a client.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._signed_in: httpx2.Response | None = None
+    _signed_in: httpx2.Response | None = None
 
     async def _perform_authorization(self) -> httpx2.Request:
         async with self.httpx_client_factory() as http:
@@ -163,10 +160,12 @@ class _DeviceOAuth(_OAuth):
         """Print the link and code, then return the token endpoint's answer once confirmed."""
         context = self.context
         client_id = context.client_info.client_id
-        request = {"client_id": client_id, "scope": context.client_metadata.scope or ""}
+        start = {"client_id": client_id}
+        if context.client_metadata.scope:
+            start["scope"] = context.client_metadata.scope
         if context.should_include_resource_param(context.protocol_version):
-            request["resource"] = context.get_resource_url()
-        started = await http.post(await self._device_authorization_endpoint(http), data=request)
+            start["resource"] = context.get_resource_url()
+        started = await http.post(await self._device_authorization_endpoint(http), data=start)
         if started.status_code != 200:
             raise OAuthTokenError(f"Device sign-in could not start ({started.status_code})")
         grant = started.json()
@@ -178,22 +177,24 @@ class _DeviceOAuth(_OAuth):
 
         poll = {"grant_type": _DEVICE_CODE_GRANT, "device_code": grant["device_code"]}
         poll["client_id"] = client_id
-        if "resource" in request:
-            poll["resource"] = request["resource"]  # RFC 8707 §2.2: also on the token request
         interval = grant.get("interval", 5)
-        with anyio.fail_after(
-            min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
-        ):
+        timeout = min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
+        with anyio.move_on_after(timeout):
             while True:
                 await anyio.sleep(interval)
-                response = await http.post(self._get_token_endpoint(), data=poll)
-                if response.status_code == 200:
-                    return response
-                error = response.json().get("error")
+                try:
+                    response = await http.post(self._get_token_endpoint(), data=poll)
+                    if response.status_code == 200:
+                        return response
+                    error = response.json().get("error")
+                except (httpx2.HTTPError, ValueError, AttributeError):
+                    error = None  # A dropped request or an unreadable answer: poll again.
                 if error == "slow_down":
                     interval += 5
-                elif error != "authorization_pending":
+                elif error not in (None, "authorization_pending"):
                     raise OAuthTokenError(f"Device sign-in failed: {error}")
+        # The authorization server answers a denied code as still pending, until it expires.
+        raise OAuthTokenError("Device sign-in was not confirmed in time, or was denied")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:
         """The `device_authorization_endpoint` of the authorization server's metadata."""
@@ -216,6 +217,18 @@ def _signs_in_on_another_device() -> bool:
             f"{SIGN_IN_ENVIRONMENT_VARIABLE} must be 'browser' or 'device', not {choice!r}"
         )
     return choice == "device" or (choice is None and "google.colab" in sys.modules)
+
+
+def _device_client_id(mcp_url: str) -> str:
+    """The OAuth client a device sign-in to `mcp_url` uses: the environment's, or LGND's."""
+    configured = os.environ.get(DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE)
+    client_id = configured or _DEVICE_CLIENT_IDS.get(mcp_url)
+    if not client_id:
+        raise ValueError(
+            f"{mcp_url} has no device sign-in; set {DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE} "
+            "to the OAuth client to use"
+        )
+    return client_id
 
 
 def auth(
@@ -246,33 +259,26 @@ def auth(
             `LGND_GEO_SIGN_IN` is neither `browser` nor `device`, or a device sign-in has no
             client for the server.
     """
+    mcp_url = server_url(url)
     client_id = os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE)
     client_secret = os.environ.get(CLIENT_SECRET_ENVIRONMENT_VARIABLE)
     if client_id and client_secret:
         return ClientCredentialsOAuthProvider(
-            server_url(url), client_id=client_id, client_secret=client_secret
+            mcp_url, client_id=client_id, client_secret=client_secret
         )
     if client_id or client_secret:
         raise ValueError(
             f"set both {CLIENT_ID_ENVIRONMENT_VARIABLE} and {CLIENT_SECRET_ENVIRONMENT_VARIABLE} "
             "to sign in as a machine user, or neither to sign in through the browser"
         )
-    mcp_url = server_url(url)
-    sign_in, fixed_client = _OAuth, {}
-    if _signs_in_on_another_device():
-        device_client_id = os.environ.get(DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE)
-        device_client_id = device_client_id or _DEVICE_CLIENT_IDS.get(mcp_url)
-        if not device_client_id:
-            raise ValueError(
-                f"{mcp_url} has no device sign-in; set {DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE} "
-                "to the OAuth client to use"
-            )
-        sign_in, fixed_client = _DeviceOAuth, {"client_id": device_client_id}
+    # The browser sign-in registers a client of its own (`client_id=None`); the device sign-in
+    # uses the server's fixed one.
+    device_client_id = _device_client_id(mcp_url) if _signs_in_on_another_device() else None
     directory = token_directory or default_token_directory()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return sign_in(
+    return (_DeviceOAuth if device_client_id else _OAuth)(
         mcp_url=mcp_url,
-        **fixed_client,
+        client_id=device_client_id,
         client_name="lgnd-geo-sdk",
         # FastMCP keys the tokens by server URL; the strategies make such keys safe file names.
         token_storage=FileTreeStore(
