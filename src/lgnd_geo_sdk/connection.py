@@ -36,6 +36,9 @@ DEFAULT_URL = "https://geo.lgnd.ai/mcp"
 """The server URL used when none is given: LGND Geo's MCP server."""
 SIGN_IN_TIMEOUT_SECONDS = 300.0
 """How long connecting waits for the browser or device sign-in to finish."""
+_CONNECT_TIMEOUT_SECONDS = SIGN_IN_TIMEOUT_SECONDS + 30
+# The connect handshake, which runs the sign-in, outlasts it, so a sign-in that runs out of time
+# fails with its own error ("not confirmed in time") rather than FastMCP's generic one.
 SIGN_IN_ENVIRONMENT_VARIABLE = "LGND_GEO_SIGN_IN"
 """The environment variable that picks the sign-in: `browser` or `device`."""
 DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_DEVICE_CLIENT_ID"
@@ -484,5 +487,5 @@ def client(url: str | None = None, *, token_directory: str | Path | None = None)
         server_url(url),
         auth=auth(url, token_directory=token_directory),
         # A person's sign-in runs inside the connect handshake.
-        init_timeout=SIGN_IN_TIMEOUT_SECONDS,
+        init_timeout=_CONNECT_TIMEOUT_SECONDS,
     )

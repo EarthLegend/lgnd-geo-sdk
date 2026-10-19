@@ -5,7 +5,7 @@ Needs the `pydantic-ai` extra: `pip install "lgnd-geo-sdk[pydantic-ai]"`.
 
 from pathlib import Path
 
-from lgnd_geo_sdk.connection import SIGN_IN_TIMEOUT_SECONDS, auth, server_url
+from lgnd_geo_sdk.connection import _CONNECT_TIMEOUT_SECONDS, auth, server_url
 
 try:
     from pydantic_ai.mcp import MCPToolset
@@ -43,6 +43,6 @@ def toolset(url: str | None = None, *, token_directory: str | Path | None = None
         server_url(url),
         auth=auth(url, token_directory=token_directory),
         include_instructions=True,
-        # The browser sign-in runs inside the connect handshake; Pydantic AI's 5 s cuts it off.
-        init_timeout=SIGN_IN_TIMEOUT_SECONDS,
+        # A person's sign-in runs inside the connect handshake; Pydantic AI's 5 s cuts it off.
+        init_timeout=_CONNECT_TIMEOUT_SECONDS,
     )

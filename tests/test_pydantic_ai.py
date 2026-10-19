@@ -27,7 +27,7 @@ def test_the_toolset_passes_the_servers_instructions_to_the_model(tmp_path):
 
 def test_connecting_waits_for_the_browser_sign_in(tmp_path):
     # The sign-in happens during the MCP handshake; Pydantic AI's 5 s default cut it off.
-    assert toolset(token_directory=tmp_path).client._init_timeout == SIGN_IN_TIMEOUT_SECONDS
+    assert toolset(token_directory=tmp_path).client._init_timeout > SIGN_IN_TIMEOUT_SECONDS
 
 
 def test_without_the_extra_importing_the_adapter_says_what_to_install(monkeypatch):
