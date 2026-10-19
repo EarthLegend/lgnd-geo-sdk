@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from pathlib import Path
+from typing import NoReturn
 
 import anyio
 import httpx2
@@ -26,7 +27,7 @@ from mcp.client.auth.utils import (
     issuers_match,
     validate_metadata_issuer,
 )
-from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type, stop_after_delay
+from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_delay
 
 URL_ENVIRONMENT_VARIABLE = "LGND_GEO_MCP_URL"
 """The environment variable that overrides the server URL."""
@@ -141,8 +142,17 @@ class _Pending(Exception):
     """The person has not confirmed the device sign-in's code yet: poll again."""
 
 
-class _SlowDown(_Pending):
-    """As `_Pending`, and the authorization server asks to poll less often."""
+def _requested_interval(retry_state: RetryCallState) -> float:
+    """How long to wait before polling again: the interval the authorization server asked for."""
+    return retry_state.args[0]._poll_interval
+
+
+# The authorization server answers a denied code as still pending, until it expires.
+_NOT_CONFIRMED = "Device sign-in was not confirmed in time, or was denied"
+
+
+def _not_confirmed(retry_state: RetryCallState) -> NoReturn:
+    raise OAuthTokenError(_NOT_CONFIRMED) from retry_state.outcome.exception()
 
 
 class _DeviceOAuth(_OAuth):
@@ -156,6 +166,7 @@ class _DeviceOAuth(_OAuth):
     """
 
     _signed_in: httpx2.Response | None = None
+    _poll_interval: float = 5
 
     async def async_auth_flow(
         self, request: httpx2.Request
@@ -186,7 +197,8 @@ class _DeviceOAuth(_OAuth):
                 f"To sign in to LGND Geo, open {link} and confirm the code {grant['user_code']}.",
                 flush=True,
             )
-            self._signed_in = await self._poll_until_confirmed(http, grant)
+            self._poll_interval = grant.get("interval", self._poll_interval)
+            self._signed_in = await self.poll(http, grant["device_code"])
         return self._signed_in.request
 
     async def _start_device_sign_in(self, http: httpx2.AsyncClient) -> dict:
@@ -202,43 +214,22 @@ class _DeviceOAuth(_OAuth):
             raise OAuthTokenError(f"Device sign-in could not start ({response.status_code})")
         return response.json()
 
-    async def _poll_until_confirmed(self, http: httpx2.AsyncClient, grant: dict) -> httpx2.Response:
-        """The token endpoint's answer once the person confirms the code (RFC 8628 §3.4-3.5)."""
-        poll = {
+    @retry(
+        # Not yet confirmed, a dropped request, or an unreadable answer: poll again.
+        retry=retry_if_exception_type((_Pending, httpx2.HTTPError)),
+        wait=_requested_interval,
+        stop=stop_after_delay(SIGN_IN_TIMEOUT_SECONDS),
+        sleep=anyio.sleep,
+        retry_error_callback=_not_confirmed,
+    )
+    async def poll(self, http: httpx2.AsyncClient, device_code: str) -> httpx2.Response:
+        """Ask the token endpoint for the tokens until the person confirms the code (RFC 8628)."""
+        form = {
             "grant_type": _DEVICE_CODE_GRANT,
-            "device_code": grant["device_code"],
+            "device_code": device_code,
             "client_id": self.context.client_info.client_id,
         }
-        interval = grant.get("interval", 5)
-        slow_downs = 0
-
-        def wait(retry_state: RetryCallState) -> float:
-            nonlocal slow_downs
-            if isinstance(retry_state.outcome.exception(), _SlowDown):
-                slow_downs += 1
-            return interval + _SLOW_DOWN_SECONDS * slow_downs
-
-        retrying = AsyncRetrying(
-            # Not yet confirmed, a dropped request, or an unreadable answer: poll again.
-            retry=retry_if_exception_type((_Pending, httpx2.HTTPError)),
-            wait=wait,
-            stop=stop_after_delay(
-                min(grant.get("expires_in", SIGN_IN_TIMEOUT_SECONDS), SIGN_IN_TIMEOUT_SECONDS)
-            ),
-            sleep=anyio.sleep,
-            reraise=True,
-        )
-        try:
-            return await retrying(self._poll, http, poll)
-        except (_Pending, httpx2.HTTPError) as exc:
-            # The authorization server answers a denied code as still pending, until it expires.
-            raise OAuthTokenError(
-                "Device sign-in was not confirmed in time, or was denied"
-            ) from exc
-
-    async def _poll(self, http: httpx2.AsyncClient, poll: dict) -> httpx2.Response:
-        """One poll: the tokens, `_Pending` to poll again, or `OAuthTokenError` to stop."""
-        response = await http.post(self._get_token_endpoint(), data=poll)
+        response = await http.post(self._get_token_endpoint(), data=form)
         if response.status_code == 200:
             return response
         try:
@@ -247,9 +238,11 @@ class _DeviceOAuth(_OAuth):
             body = None
         error = body.get("error") if isinstance(body, dict) else None
         if error == "slow_down":
-            raise _SlowDown
-        if error in (None, "authorization_pending"):  # None: an unreadable answer
+            self._poll_interval += _SLOW_DOWN_SECONDS  # §3.5: for this and every later poll
+        if error in (None, "authorization_pending", "slow_down"):  # None: an unreadable answer
             raise _Pending
+        if error == "expired_token":
+            raise OAuthTokenError(_NOT_CONFIRMED)
         raise OAuthTokenError(f"Device sign-in failed: {error}")
 
     async def _device_authorization_endpoint(self, http: httpx2.AsyncClient) -> str:

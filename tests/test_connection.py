@@ -428,8 +428,19 @@ async def test_a_denied_device_sign_in_stops_polling(tmp_path, monkeypatch):
     credential._get_token_endpoint = lambda: TOKEN_ENDPOINT
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(deny)) as http:
         with pytest.raises(OAuthTokenError, match="access_denied"):
-            await credential._poll_until_confirmed(
-                http, {"device_code": "device-secret", "interval": 0, "expires_in": 60}
-            )
+            await credential.poll(http, "device-secret")
 
     assert len(polls) == 1
+
+
+async def test_an_expired_device_code_says_it_was_not_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+    credential = auth(MCP_URL, token_directory=tmp_path)
+    await credential._initialize()
+    credential._get_token_endpoint = lambda: TOKEN_ENDPOINT
+    expired = httpx2.MockTransport(lambda _: httpx2.Response(400, json={"error": "expired_token"}))
+
+    async with httpx2.AsyncClient(transport=expired) as http:
+        with pytest.raises(OAuthTokenError, match="not confirmed in time"):
+            await credential.poll(http, "device-secret")
