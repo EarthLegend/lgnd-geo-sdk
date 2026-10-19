@@ -2,6 +2,8 @@
 
 import os
 import sys
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from pathlib import Path
 
 import anyio
@@ -144,17 +146,32 @@ class _DeviceOAuth(_OAuth):
 
     _signed_in: httpx2.Response | None = None
 
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        """`_OAuth`'s flow, answering the device sign-in's token request with its own response.
+
+        The base flow sends the token request `_perform_authorization` returns and processes the
+        answer. A device code is good for one exchange, which the polling has already made, so
+        that request is not sent again: its response goes straight back into the flow.
+        """
+        async with aclosing(super().async_auth_flow(request)) as flow:
+            response = None
+            while True:
+                try:
+                    outgoing = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+                signed_in, self._signed_in = self._signed_in, None
+                if signed_in is not None and outgoing is signed_in.request:
+                    response = signed_in
+                else:
+                    response = yield outgoing
+
     async def _perform_authorization(self) -> httpx2.Request:
         async with self.httpx_client_factory() as http:
             self._signed_in = await self._sign_in_on_another_device(http)
-        # The base flow sends the request returned here and passes its answer to
-        # `_handle_token_response`. The tokens are already in hand, and a device code is good for
-        # one exchange, so it sends a harmless request instead and is handed the tokens below.
-        return httpx2.Request("GET", str(self.context.oauth_metadata.issuer))
-
-    async def _handle_token_response(self, response: httpx2.Response) -> None:
-        signed_in, self._signed_in = self._signed_in, None
-        await super()._handle_token_response(signed_in or response)
+        return self._signed_in.request
 
     async def _sign_in_on_another_device(self, http: httpx2.AsyncClient) -> httpx2.Response:
         """Print the link and code, then return the token endpoint's answer once confirmed."""
@@ -275,6 +292,9 @@ def auth(
     # uses the server's fixed one.
     device_client_id = _device_client_id(mcp_url) if _signs_in_on_another_device() else None
     directory = token_directory or default_token_directory()
+    if device_client_id:
+        # Apart from the browser sign-in's: each stores a client and tokens the other cannot use.
+        directory = directory / f"device-{device_client_id}"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     return (_DeviceOAuth if device_client_id else _OAuth)(
         mcp_url=mcp_url,

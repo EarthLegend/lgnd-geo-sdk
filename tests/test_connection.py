@@ -298,7 +298,7 @@ def device_sign_in_server(sent: list[httpx2.Request], *, pending: int) -> httpx2
                 )
             case "https://geo.test/mcp":
                 return httpx2.Response(200 if "Authorization" in request.headers else 401)
-        return httpx2.Response(200)
+        raise httpx2.ConnectError(f"unexpected request to {request.url}", request=request)
 
     return httpx2.MockTransport(respond)
 
@@ -328,6 +328,8 @@ async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_
     assert all(b"device_code=device-secret" in poll.content for poll in polls)
     assert all(b"client_id=client_sdk" in r.content for r in [started, *polls])
     assert not [r for r in sent if r.url.path == "/oauth2/register"]
+    # No request after the confirmed poll but the retried call: the poll's answer is the token.
+    assert [str(r.url) for r in sent[-2:]] == [TOKEN_ENDPOINT, MCP_URL]
     assert "https://auth.test/device?user_code=ABCD-EFGH" in capsys.readouterr().out
     assert (await credential.token_storage_adapter.get_tokens()).access_token == "device-token"
 
@@ -365,3 +367,26 @@ def test_the_default_server_has_a_device_sign_in(tmp_path, monkeypatch):
     monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
 
     assert isinstance(auth(token_directory=tmp_path), _DeviceOAuth)
+
+
+async def test_the_browser_and_device_sign_ins_keep_their_credentials_apart(tmp_path, monkeypatch):
+    browser = auth(MCP_URL, token_directory=tmp_path)
+    await browser.token_storage_adapter.set_client_info(
+        OAuthClientInformationFull(
+            client_id="client_dcr",
+            redirect_uris=["http://localhost:1/callback"],
+            token_endpoint_auth_method="none",
+        )
+    )
+    await browser.token_storage_adapter.set_tokens(OAuthToken(access_token="browser"))
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+
+    device = auth(MCP_URL, token_directory=tmp_path)
+    await device._initialize()  # stores its fixed client
+    await device.token_storage_adapter.set_tokens(OAuthToken(access_token="device"))
+
+    assert device.context.current_tokens is None  # not the browser sign-in's
+    assert (await device.token_storage_adapter.get_client_info()).client_id == "client_sdk"
+    assert (await browser.token_storage_adapter.get_tokens()).access_token == "browser"
+    assert (await browser.token_storage_adapter.get_client_info()).client_id == "client_dcr"
