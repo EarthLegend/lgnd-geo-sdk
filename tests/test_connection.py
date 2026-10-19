@@ -390,3 +390,14 @@ async def test_the_browser_and_device_sign_ins_keep_their_credentials_apart(tmp_
     assert (await device.token_storage_adapter.get_client_info()).client_id == "client_sdk"
     assert (await browser.token_storage_adapter.get_tokens()).access_token == "browser"
     assert (await browser.token_storage_adapter.get_client_info()).client_id == "client_dcr"
+
+
+@pytest.mark.parametrize("sign_in", ["browser", "device"])
+def test_the_token_directory_may_be_a_string(tmp_path, monkeypatch, sign_in):
+    # As a notebook passes it.
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", sign_in)
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+
+    auth(MCP_URL, token_directory=str(tmp_path / "tokens"))
+
+    assert (tmp_path / "tokens").is_dir()

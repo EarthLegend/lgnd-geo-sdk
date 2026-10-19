@@ -274,7 +274,7 @@ def _device_client_id(mcp_url: str) -> str:
 
 
 def auth(
-    url: str | None = None, *, token_directory: Path | None = None
+    url: str | None = None, *, token_directory: str | Path | None = None
 ) -> OAuth | ClientCredentialsOAuthProvider:
     """Return the sign-in to LGND Geo's MCP server.
 
@@ -307,7 +307,7 @@ def auth(
     # The browser sign-in registers a client of its own (`client_id=None`); the device sign-in
     # uses the server's fixed one.
     device_client_id = _device_client_id(mcp_url) if _signs_in_on_another_device() else None
-    directory = token_directory or default_token_directory()
+    directory = Path(token_directory or default_token_directory())
     if device_client_id:
         # Apart from the browser sign-in's: each stores a client and tokens the other cannot use.
         directory = directory / f"device-{device_client_id}"
@@ -326,7 +326,7 @@ def auth(
     )
 
 
-def client(url: str | None = None, *, token_directory: Path | None = None) -> Client:
+def client(url: str | None = None, *, token_directory: str | Path | None = None) -> Client:
     """Return a FastMCP client for LGND Geo's MCP server, to call its tools from code.
 
     Args:
