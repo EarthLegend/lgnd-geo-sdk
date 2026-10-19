@@ -16,7 +16,7 @@ except ImportError as error:
     ) from error
 
 
-def toolset(url: str | None = None, *, token_directory: Path | None = None) -> MCPToolset:
+def toolset(url: str | None = None, *, token_directory: str | Path | None = None) -> MCPToolset:
     """Return LGND Geo's MCP server as a Pydantic AI toolset.
 
     The server's instructions, which say how its tools fit together, are passed to the model.
@@ -29,8 +29,8 @@ def toolset(url: str | None = None, *, token_directory: Path | None = None) -> M
             `lgnd_geo_sdk.default_token_directory()`.
 
     Returns:
-        The toolset, to pass to `pydantic_ai.Agent(toolsets=[...])`. It signs in through the
-        browser the first time; see `lgnd_geo_sdk.auth`.
+        The toolset, to pass to `pydantic_ai.Agent(toolsets=[...])`. It signs in the first time;
+        see `lgnd_geo_sdk.auth`.
 
     Example:
         ```python

@@ -17,6 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp-slim[client]>=4.0.10",
+    "tenacity>=9.1",
 ]
 
 [project.urls]

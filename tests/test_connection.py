@@ -1,9 +1,14 @@
 """The core: which server, the sign-in, where its tokens are kept, and the client."""
 
+import sys
+import types
+
 import httpx2
+import pytest
 from fastmcp import Client
-from fastmcp.client.auth import OAuth
+from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import FileTreeStore
+from mcp.client.auth import OAuthTokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from lgnd_geo_sdk import (
@@ -13,7 +18,7 @@ from lgnd_geo_sdk import (
     default_token_directory,
     server_url,
 )
-from lgnd_geo_sdk.connection import SIGN_IN_TIMEOUT_SECONDS
+from lgnd_geo_sdk.connection import SIGN_IN_TIMEOUT_SECONDS, _DeviceOAuth
 
 
 def test_the_default_server_is_lgnd_geo(monkeypatch):
@@ -112,7 +117,13 @@ def sign_in_server(sent: list[httpx2.Request]) -> httpx2.MockTransport:
         match str(request.url):
             case "https://geo.test/.well-known/oauth-protected-resource/mcp":
                 return httpx2.Response(
-                    200, json={"resource": MCP_URL, "authorization_servers": [AUTHORIZATION_SERVER]}
+                    200,
+                    json={
+                        "resource": MCP_URL,
+                        "authorization_servers": [AUTHORIZATION_SERVER],
+                        # As LGND Geo advertises them: a person's scopes.
+                        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+                    },
                 )
             case "https://auth.test/.well-known/oauth-authorization-server":
                 return httpx2.Response(
@@ -195,3 +206,262 @@ async def test_a_sign_in_from_another_authorization_server_is_not_refreshed(tmp_
     assert credential.context.current_tokens is None
     assert credential.context.client_info is None
     assert not [r for r in sent if r.method == "POST"]
+
+
+def test_a_machine_users_credentials_sign_in_without_the_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_CLIENT_ID", "client_m2m")
+    monkeypatch.setenv("LGND_GEO_CLIENT_SECRET", "secret")
+
+    credential = auth(MCP_URL, token_directory=tmp_path / "tokens")
+
+    assert isinstance(credential, ClientCredentialsOAuthProvider)
+    assert not (tmp_path / "tokens").exists()
+
+
+@pytest.mark.parametrize("name", ["LGND_GEO_CLIENT_ID", "LGND_GEO_CLIENT_SECRET"])
+def test_half_a_machine_users_credentials_is_refused(tmp_path, monkeypatch, name):
+    monkeypatch.setenv(name, "set")
+
+    with pytest.raises(ValueError, match="set both"):
+        auth(token_directory=tmp_path)
+
+
+async def test_a_machine_user_gets_its_token_at_the_authorization_servers_token_endpoint(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LGND_GEO_CLIENT_ID", "client_m2m")
+    monkeypatch.setenv("LGND_GEO_CLIENT_SECRET", "secret")
+    sent: list[httpx2.Request] = []
+
+    credential = auth(MCP_URL, token_directory=tmp_path)
+    async with httpx2.AsyncClient(transport=sign_in_server(sent), auth=credential) as http:
+        response = await http.get(MCP_URL)
+
+    token_request = next(r for r in sent if r.method == "POST")
+    assert response.status_code == 200
+    assert str(token_request.url) == TOKEN_ENDPOINT
+    assert b"grant_type=client_credentials" in token_request.content
+    assert b"scope" not in token_request.content  # a person's scopes are refused to a machine
+    assert sent[-1].headers["Authorization"] == "Bearer fresh"
+
+
+DEVICE_ENDPOINT = f"{AUTHORIZATION_SERVER}/oauth2/device_authorization"
+
+
+TOKENS = httpx2.Response(
+    200,
+    json={
+        "access_token": "device-token",
+        "refresh_token": "refresh",
+        "token_type": "Bearer",
+        "expires_in": 300,
+    },
+)
+
+
+def token_error(error: str, status: int = 400) -> httpx2.Response:
+    """Return a token endpoint error.
+
+    Args:
+        error: The error code, such as `authorization_pending`.
+        status: The HTTP status.
+
+    Returns:
+        The response.
+    """
+    return httpx2.Response(status, json={"error": error})
+
+
+def device_sign_in_server(
+    sent: list[httpx2.Request], *, polls: list[httpx2.Response]
+) -> httpx2.MockTransport:
+    """Return the servers for a device sign-in, recording each request.
+
+    Args:
+        sent: Where each request the servers receive is appended.
+        polls: The token endpoint's answers, in turn.
+
+    Returns:
+        The transport serving the MCP server and its authorization server.
+    """
+    answers = iter(polls)
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        match str(request.url):
+            case "https://geo.test/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(
+                    200, json={"resource": MCP_URL, "authorization_servers": [AUTHORIZATION_SERVER]}
+                )
+            case "https://auth.test/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": AUTHORIZATION_SERVER,
+                        "authorization_endpoint": f"{AUTHORIZATION_SERVER}/oauth2/authorize",
+                        "token_endpoint": TOKEN_ENDPOINT,
+                        "registration_endpoint": f"{AUTHORIZATION_SERVER}/oauth2/register",
+                        "device_authorization_endpoint": DEVICE_ENDPOINT,
+                    },
+                )
+            case "https://auth.test/oauth2/register":
+                return httpx2.Response(
+                    201,
+                    json={
+                        "client_id": "client_dcr",
+                        "redirect_uris": ["http://localhost:1/callback"],
+                        "token_endpoint_auth_method": "none",
+                    },
+                )
+            case "https://auth.test/oauth2/device_authorization":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "device_code": "device-secret",
+                        "user_code": "ABCD-EFGH",
+                        "verification_uri": f"{AUTHORIZATION_SERVER}/device",
+                        "verification_uri_complete": f"{AUTHORIZATION_SERVER}/device?user_code=ABCD-EFGH",
+                        "expires_in": 300,
+                        "interval": 0,
+                    },
+                )
+            case "https://auth.test/oauth2/token":
+                return next(answers)
+            case "https://geo.test/mcp":
+                return httpx2.Response(200 if "Authorization" in request.headers else 401)
+        raise httpx2.ConnectError(f"unexpected request to {request.url}", request=request)
+
+    return httpx2.MockTransport(respond)
+
+
+async def sign_in_on_another_device(
+    tmp_path, monkeypatch, polls: list[httpx2.Response]
+) -> tuple[OAuth, list[httpx2.Request], httpx2.Response]:
+    """Connect with a device sign-in.
+
+    Args:
+        tmp_path: The token directory.
+        monkeypatch: Sets the environment for a device sign-in.
+        polls: The token endpoint's answers, in turn.
+
+    Returns:
+        The sign-in, the requests sent, and the MCP server's answer once signed in.
+    """
+    monkeypatch.setattr("lgnd_geo_sdk.connection._SLOW_DOWN_SECONDS", 0)
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+    sent: list[httpx2.Request] = []
+    transport = device_sign_in_server(sent, polls=polls)
+    credential = auth(MCP_URL, token_directory=tmp_path)
+    credential.httpx_client_factory = lambda: httpx2.AsyncClient(transport=transport)
+    async with httpx2.AsyncClient(transport=transport, auth=credential) as http:
+        response = await http.get(MCP_URL)
+    return credential, sent, response
+
+
+async def test_a_device_sign_in_prints_a_link_and_polls_through_an_outage_until_confirmed(
+    tmp_path, monkeypatch, capsys
+):
+    credential, sent, response = await sign_in_on_another_device(
+        tmp_path,
+        monkeypatch,
+        polls=[
+            httpx2.Response(503, text="upstream unavailable"),
+            token_error("temporarily_unavailable", status=503),
+            token_error("slow_down"),
+            token_error("authorization_pending"),
+            TOKENS,
+        ],
+    )
+
+    started = next(r for r in sent if str(r.url) == DEVICE_ENDPOINT)
+    polls = [r for r in sent if str(r.url) == TOKEN_ENDPOINT]
+    assert response.status_code == 200
+    assert sent[-1].headers["Authorization"] == "Bearer device-token"
+    assert b"resource=https%3A%2F%2Fgeo.test%2Fmcp" in started.content
+    assert len(polls) == 5
+    assert all(b"device_code=device-secret" in poll.content for poll in polls)
+    assert all(b"client_id=client_sdk" in r.content for r in [started, *polls])
+    assert not [r for r in sent if r.url.path == "/oauth2/register"]
+    # No request after the confirmed poll but the retried call: the poll's answer is the token.
+    assert [str(r.url) for r in sent[-2:]] == [TOKEN_ENDPOINT, MCP_URL]
+    assert "https://auth.test/device?user_code=ABCD-EFGH" in capsys.readouterr().out
+    assert (await credential.token_storage_adapter.get_tokens()).access_token == "device-token"
+
+
+def test_colab_signs_in_on_another_device(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "google.colab", types.ModuleType("google.colab"))
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+
+    assert isinstance(auth(token_directory=tmp_path), _DeviceOAuth)
+
+
+def test_the_browser_sign_in_can_be_chosen_in_colab(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "google.colab", types.ModuleType("google.colab"))
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "browser")
+
+    assert not isinstance(auth(token_directory=tmp_path), _DeviceOAuth)
+
+
+def test_an_unknown_sign_in_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "magic")
+
+    with pytest.raises(ValueError, match="LGND_GEO_SIGN_IN"):
+        auth(token_directory=tmp_path)
+
+
+def test_a_device_sign_in_needs_a_client_for_the_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+
+    with pytest.raises(ValueError, match="LGND_GEO_DEVICE_CLIENT_ID"):
+        auth("https://elsewhere.test/mcp", token_directory=tmp_path)
+
+
+def test_the_default_server_has_a_device_sign_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("LGND_GEO_MCP_URL", raising=False)
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+
+    assert isinstance(auth(token_directory=tmp_path), _DeviceOAuth)
+
+
+async def test_the_browser_and_device_sign_ins_keep_their_credentials_apart(tmp_path, monkeypatch):
+    browser = auth(MCP_URL, token_directory=tmp_path)
+    await browser.token_storage_adapter.set_client_info(
+        OAuthClientInformationFull(
+            client_id="client_dcr",
+            redirect_uris=["http://localhost:1/callback"],
+            token_endpoint_auth_method="none",
+        )
+    )
+    await browser.token_storage_adapter.set_tokens(OAuthToken(access_token="browser"))
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", "device")
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+
+    device = auth(MCP_URL, token_directory=tmp_path)
+    await device._initialize()  # stores its fixed client
+    await device.token_storage_adapter.set_tokens(OAuthToken(access_token="device"))
+
+    assert device.context.current_tokens is None  # not the browser sign-in's
+    assert (await device.token_storage_adapter.get_client_info()).client_id == "client_sdk"
+    assert (await browser.token_storage_adapter.get_tokens()).access_token == "browser"
+    assert (await browser.token_storage_adapter.get_client_info()).client_id == "client_dcr"
+
+
+@pytest.mark.parametrize("sign_in", ["browser", "device"])
+def test_the_token_directory_may_be_a_string(tmp_path, monkeypatch, sign_in):
+    # As a notebook passes it.
+    monkeypatch.setenv("LGND_GEO_SIGN_IN", sign_in)
+    monkeypatch.setenv("LGND_GEO_DEVICE_CLIENT_ID", "client_sdk")
+
+    auth(MCP_URL, token_directory=str(tmp_path / "tokens"))
+
+    assert (tmp_path / "tokens").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [("access_denied", "access_denied"), ("expired_token", "not confirmed in time")],
+)
+async def test_a_device_sign_in_stops_at_an_error(tmp_path, monkeypatch, error, message):
+    with pytest.raises(OAuthTokenError, match=message):
+        await sign_in_on_another_device(tmp_path, monkeypatch, polls=[token_error(error)])

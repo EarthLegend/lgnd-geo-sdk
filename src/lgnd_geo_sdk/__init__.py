@@ -15,7 +15,11 @@ async with client() as geo:
 """
 
 from lgnd_geo_sdk.connection import (
+    CLIENT_ID_ENVIRONMENT_VARIABLE,
+    CLIENT_SECRET_ENVIRONMENT_VARIABLE,
     DEFAULT_URL,
+    DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE,
+    SIGN_IN_ENVIRONMENT_VARIABLE,
     URL_ENVIRONMENT_VARIABLE,
     auth,
     client,
@@ -24,7 +28,11 @@ from lgnd_geo_sdk.connection import (
 )
 
 __all__ = [
+    "CLIENT_ID_ENVIRONMENT_VARIABLE",
+    "CLIENT_SECRET_ENVIRONMENT_VARIABLE",
     "DEFAULT_URL",
+    "DEVICE_CLIENT_ID_ENVIRONMENT_VARIABLE",
+    "SIGN_IN_ENVIRONMENT_VARIABLE",
     "URL_ENVIRONMENT_VARIABLE",
     "auth",
     "client",

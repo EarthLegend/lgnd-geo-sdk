@@ -8,5 +8,5 @@ python examples/pydantic_ai/regional_planner.py "Where around Phoenix has new ho
 ```
 
 ```python
---8<-- "examples/pydantic_ai/regional_planner.py"
+--8 < --"examples/pydantic_ai/regional_planner.py"
 ```
