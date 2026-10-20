@@ -383,27 +383,6 @@ def _api_key() -> BearerAuth | None:
     return BearerAuth(api_key)
 
 
-def _api_key() -> BearerAuth | None:
-    """Return the API key's sign-in, if `LGND_GEO_API_KEY` is set.
-
-    Returns:
-        A `BearerAuth` sending the key, else None.
-
-    Raises:
-        ValueError: A machine user's credentials are set too.
-    """
-    api_key = os.environ.get(API_KEY_ENVIRONMENT_VARIABLE)
-    if not api_key:
-        return None
-    if os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE) or os.environ.get(
-        CLIENT_SECRET_ENVIRONMENT_VARIABLE
-    ):
-        raise ValueError(
-            f"set {API_KEY_ENVIRONMENT_VARIABLE} or a machine user's credentials, not both"
-        )
-    return BearerAuth(api_key)
-
-
 def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
     """Return the machine user's sign-in, if its credentials are set.
 
