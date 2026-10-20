@@ -362,6 +362,48 @@ def _signs_in_on_another_device() -> bool:
     return choice == "device" or (choice is None and "google.colab" in sys.modules)
 
 
+def _api_key() -> BearerAuth | None:
+    """Return the API key's sign-in, if `LGND_GEO_API_KEY` is set.
+
+    Returns:
+        A `BearerAuth` sending the key, else None.
+
+    Raises:
+        ValueError: A machine user's credentials are set too.
+    """
+    api_key = os.environ.get(API_KEY_ENVIRONMENT_VARIABLE)
+    if not api_key:
+        return None
+    if os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE) or os.environ.get(
+        CLIENT_SECRET_ENVIRONMENT_VARIABLE
+    ):
+        raise ValueError(
+            f"set {API_KEY_ENVIRONMENT_VARIABLE} or a machine user's credentials, not both"
+        )
+    return BearerAuth(api_key)
+
+
+def _api_key() -> BearerAuth | None:
+    """Return the API key's sign-in, if `LGND_GEO_API_KEY` is set.
+
+    Returns:
+        A `BearerAuth` sending the key, else None.
+
+    Raises:
+        ValueError: A machine user's credentials are set too.
+    """
+    api_key = os.environ.get(API_KEY_ENVIRONMENT_VARIABLE)
+    if not api_key:
+        return None
+    if os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE) or os.environ.get(
+        CLIENT_SECRET_ENVIRONMENT_VARIABLE
+    ):
+        raise ValueError(
+            f"set {API_KEY_ENVIRONMENT_VARIABLE} or a machine user's credentials, not both"
+        )
+    return BearerAuth(api_key)
+
+
 def _machine_user(mcp_url: str) -> ClientCredentialsOAuthProvider | None:
     """Return the machine user's sign-in, if its credentials are set.
 
@@ -445,14 +487,8 @@ def auth(
             client for the server.
     """
     mcp_url = server_url(url)
-    if api_key := os.environ.get(API_KEY_ENVIRONMENT_VARIABLE):
-        if os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE) or os.environ.get(
-            CLIENT_SECRET_ENVIRONMENT_VARIABLE
-        ):
-            raise ValueError(
-                f"set {API_KEY_ENVIRONMENT_VARIABLE} or a machine user's credentials, not both"
-            )
-        return BearerAuth(api_key)
+    if api_key := _api_key():
+        return api_key
     if machine_user := _machine_user(mcp_url):
         return machine_user
     # The browser sign-in registers a client of its own (`client_id=None`); the device sign-in
