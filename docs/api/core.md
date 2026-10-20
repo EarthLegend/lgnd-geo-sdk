@@ -11,3 +11,5 @@
 ::: lgnd_geo_sdk.connection.DEFAULT_URL
 
 ::: lgnd_geo_sdk.connection.URL_ENVIRONMENT_VARIABLE
+
+::: lgnd_geo_sdk.connection.API_KEY_ENVIRONMENT_VARIABLE

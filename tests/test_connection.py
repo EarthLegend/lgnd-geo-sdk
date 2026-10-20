@@ -6,7 +6,7 @@ import types
 import httpx2
 import pytest
 from fastmcp import Client
-from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
+from fastmcp.client.auth import BearerAuth, ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import FileTreeStore
 from mcp.client.auth import OAuthTokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -217,6 +217,32 @@ def test_a_machine_users_credentials_sign_in_without_the_browser(tmp_path, monke
 
     assert isinstance(credential, ClientCredentialsOAuthProvider)
     assert not (tmp_path / "tokens").exists()
+
+
+async def test_an_api_key_is_sent_with_every_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("LGND_GEO_API_KEY", "sk_test")
+    sent: list[httpx2.Request] = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200)
+
+    credential = auth(MCP_URL, token_directory=tmp_path / "tokens")
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond), auth=credential) as http:
+        await http.get(MCP_URL)
+
+    assert isinstance(credential, BearerAuth)
+    assert [r.headers["Authorization"] for r in sent] == ["Bearer sk_test"]
+    assert not (tmp_path / "tokens").exists()
+
+
+@pytest.mark.parametrize("name", ["LGND_GEO_CLIENT_ID", "LGND_GEO_CLIENT_SECRET"])
+def test_an_api_key_with_a_machine_users_credentials_is_refused(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("LGND_GEO_API_KEY", "sk_test")
+    monkeypatch.setenv(name, "set")
+
+    with pytest.raises(ValueError, match="not both"):
+        auth(token_directory=tmp_path)
 
 
 @pytest.mark.parametrize("name", ["LGND_GEO_CLIENT_ID", "LGND_GEO_CLIENT_SECRET"])
