@@ -7,7 +7,7 @@ environment in this order.
 | --- | --- | --- |
 | API key | `LGND_GEO_API_KEY` | the person who created the key |
 | Machine user | `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` | the machine user |
-| Device sign-in | `LGND_GEO_SIGN_IN=device` | the person who confirms the code |
+| Headless sign-in | `LGND_GEO_SIGN_IN=device` | the person who signs in |
 | Browser sign-in | nothing (the default) | the person who signs in |
 
 Setting an API key together with a machine user's credentials is an error.
@@ -21,19 +21,20 @@ The key is sent with every request.
 The SDK uses the OAuth client-credentials grant. It keeps tokens in memory and fetches a new one
 when they expire.
 
-## Device sign-in
+## Headless sign-in
 
-The first connection prints a link and a code. Open the link in any browser, sign in and confirm
-the code. A server other than LGND Geo's needs `LGND_GEO_DEVICE_CLIENT_ID`, the OAuth client its
-device sign-in uses.
+Use this when the code runs where it cannot open a browser, such as a remote server. The first
+connection prints a link and a code. Open the link in a browser on any machine, sign in and confirm
+the code, and the code carries on. A server other than LGND Geo's needs
+`LGND_GEO_DEVICE_CLIENT_ID`, the OAuth client its headless sign-in uses.
 
 ## Browser sign-in
 
-The first connection opens the browser to sign in. `LGND_GEO_SIGN_IN=browser` selects it
-explicitly.
+The first connection opens a browser on the same machine to sign in. `LGND_GEO_SIGN_IN=browser`
+selects it explicitly.
 
-The two person sign-ins store their tokens in `~/.config/lgnd_geo_sdk/tokens`, so later runs
-connect without signing in again. Pass `token_directory=...` to keep them elsewhere.
+Both person sign-ins store their tokens in `~/.config/lgnd_geo_sdk/tokens`, so later runs connect
+without signing in again. Pass `token_directory=...` to keep them elsewhere.
 
 ## Server
 
