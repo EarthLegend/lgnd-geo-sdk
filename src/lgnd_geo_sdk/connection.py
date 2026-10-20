@@ -442,8 +442,8 @@ def auth(
     With `LGND_GEO_API_KEY` set, this sends that API key with every request.
 
     With `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` set, this signs in as that machine
-    user: the OAuth client-credentials grant, with no browser, for scripts, CI and hosted
-    notebooks. Its tokens are kept in memory; a new one is a single request.
+    user: the OAuth client-credentials grant, with no browser. Its tokens are kept in memory; a
+    new one is a single request.
 
     Otherwise this is the OAuth 2.1 sign-in: the first run opens the browser, and the tokens are
     stored in `token_directory`, so later runs sign in without it. In Colab, or with
