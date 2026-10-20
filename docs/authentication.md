@@ -20,6 +20,26 @@ itself. This is the default in Colab. Set `LGND_GEO_SIGN_IN=device` to use it an
 `LGND_GEO_SIGN_IN=browser` to keep the browser sign-in. A server other than LGND Geo's needs
 `LGND_GEO_DEVICE_CLIENT_ID`, the OAuth client its device sign-in uses.
 
+## API keys
+
+Set an API key in the environment and connect as usual:
+
+```bash
+export LGND_GEO_API_KEY=sk_...
+```
+
+With it set, `auth()`, `client()` and the framework adapters send the key with every request and
+never open the browser.
+
+In Colab, keep it in the notebook's secrets and copy it into the environment first:
+
+```python
+import os
+from google.colab import userdata
+
+os.environ["LGND_GEO_API_KEY"] = userdata.get("LGND_GEO_API_KEY")
+```
+
 ## Machine users
 
 Scripts, CI and hosted notebooks such as Colab, where no browser can complete the sign-in, sign in

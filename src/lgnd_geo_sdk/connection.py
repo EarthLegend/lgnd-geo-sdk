@@ -11,7 +11,7 @@ from typing import NoReturn
 import anyio
 import httpx2
 from fastmcp import Client
-from fastmcp.client.auth import ClientCredentialsOAuthProvider, OAuth
+from fastmcp.client.auth import BearerAuth, ClientCredentialsOAuthProvider, OAuth
 from key_value.aio.stores.filetree import (
     FileTreeStore,
     FileTreeV1CollectionSanitizationStrategy,
@@ -47,6 +47,8 @@ CLIENT_ID_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_ID"
 """The environment variable holding a machine user's client id."""
 CLIENT_SECRET_ENVIRONMENT_VARIABLE = "LGND_GEO_CLIENT_SECRET"
 """The environment variable holding a machine user's client secret."""
+API_KEY_ENVIRONMENT_VARIABLE = "LGND_GEO_API_KEY"
+"""The environment variable holding an API key."""
 
 _DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 _SLOW_DOWN_SECONDS = 5
@@ -413,8 +415,10 @@ def _device_client_id(mcp_url: str) -> str:
 
 def auth(
     url: str | None = None, *, token_directory: str | Path | None = None
-) -> OAuth | ClientCredentialsOAuthProvider:
+) -> OAuth | ClientCredentialsOAuthProvider | BearerAuth:
     """Return the sign-in to LGND Geo's MCP server.
+
+    With `LGND_GEO_API_KEY` set, this sends that API key with every request.
 
     With `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` set, this signs in as that machine
     user: the OAuth client-credentials grant, with no browser, for scripts, CI and hosted
@@ -431,15 +435,24 @@ def auth(
             `default_token_directory()`.
 
     Returns:
-        A FastMCP `OAuth` or `ClientCredentialsOAuthProvider`: an `httpx2.Auth` that any MCP
-        client on the `mcp` 2 SDK can sign in with.
+        A FastMCP `BearerAuth`, `OAuth` or `ClientCredentialsOAuthProvider`: an `httpx2.Auth`
+        that any MCP client on the `mcp` 2 SDK can sign in with.
 
     Raises:
-        ValueError: Only one of `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` is set,
+        ValueError: `LGND_GEO_API_KEY` is set with a machine user's credentials, only one of
+            `LGND_GEO_CLIENT_ID` and `LGND_GEO_CLIENT_SECRET` is set,
             `LGND_GEO_SIGN_IN` is neither `browser` nor `device`, or a device sign-in has no
             client for the server.
     """
     mcp_url = server_url(url)
+    if api_key := os.environ.get(API_KEY_ENVIRONMENT_VARIABLE):
+        if os.environ.get(CLIENT_ID_ENVIRONMENT_VARIABLE) or os.environ.get(
+            CLIENT_SECRET_ENVIRONMENT_VARIABLE
+        ):
+            raise ValueError(
+                f"set {API_KEY_ENVIRONMENT_VARIABLE} or a machine user's credentials, not both"
+            )
+        return BearerAuth(api_key)
     if machine_user := _machine_user(mcp_url):
         return machine_user
     # The browser sign-in registers a client of its own (`client_id=None`); the device sign-in
