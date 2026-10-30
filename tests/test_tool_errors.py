@@ -24,7 +24,7 @@ def server() -> FastMCP:
     mcp = FastMCP("lgnd-geo")
 
     @mcp.tool
-    def discover_area_view(index: str) -> str:
+    def area_view(index: str) -> str:
         """View an area."""
         if index != "naip":
             raise ToolError(REFUSAL)
@@ -41,9 +41,9 @@ async def test_a_refused_call_is_sent_back_to_the_model_with_the_servers_text():
         calls = [p for m in messages for p in m.parts if isinstance(p, ToolCallPart)]
         seen.extend(str(p.content) for p in messages[-1].parts if isinstance(p, RetryPromptPart))
         if not calls:
-            return ModelResponse(parts=[ToolCallPart("discover_area_view", {"index": "landsat"})])
+            return ModelResponse(parts=[ToolCallPart("area_view", {"index": "landsat"})])
         if len(calls) == 1:
-            return ModelResponse(parts=[ToolCallPart("discover_area_view", {"index": "naip"})])
+            return ModelResponse(parts=[ToolCallPart("area_view", {"index": "naip"})])
         return ModelResponse(parts=[TextPart("done")])
 
     agent = Agent(FunctionModel(model), toolsets=[MCPToolset(server())])
