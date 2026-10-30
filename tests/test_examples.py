@@ -38,11 +38,11 @@ async def test_a_pydantic_ai_agent_calls_lgnd_geos_tools(path):
     geo = FastMCP("lgnd-geo")
 
     @geo.tool
-    def user_identity_get() -> str:
+    def account_get() -> str:
         """Who is signed in."""
         return "usr_1"
 
-    model = TestModel(call_tools=["user_identity_get"], custom_output_text="done")
+    model = TestModel(call_tools=["account_get"], custom_output_text="done")
     result = await example.build_agent(MCPToolset(geo), model=model).run("who am i")
 
     assert result.output == "done"
