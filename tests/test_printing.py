@@ -17,7 +17,7 @@ def server() -> FastMCP:
     mcp = FastMCP("lgnd-geo")
 
     @mcp.tool
-    def user_identity_get() -> str:
+    def account_get() -> str:
         """Who is signed in."""
         return "usr_1"
 
@@ -26,14 +26,14 @@ def server() -> FastMCP:
 
 async def test_a_run_prints_the_tool_call_then_the_answer(capsys):
     agent = Agent(
-        TestModel(call_tools=["user_identity_get"], custom_output_text="You are usr_1."),
+        TestModel(call_tools=["account_get"], custom_output_text="You are usr_1."),
         toolsets=[MCPToolset(server())],
     )
 
     await run_and_print(agent, "who am i")
 
     out = capsys.readouterr().out
-    assert out.index("→ user_identity_get") < out.index("✓ done") < out.index("You are usr_1.")
+    assert out.index("→ account_get") < out.index("✓ done") < out.index("You are usr_1.")
 
 
 async def test_a_run_prints_the_models_thinking_before_its_tool_call(capsys):
@@ -42,7 +42,7 @@ async def test_a_run_prints_the_models_thinking_before_its_tool_call(capsys):
         if len(messages) == 1:
             yield {0: DeltaThinkingPart(content="I should check ")}
             yield {0: DeltaThinkingPart(content="who is signed in.")}
-            yield {1: DeltaToolCall(name="user_identity_get", json_args="{}")}
+            yield {1: DeltaToolCall(name="account_get", json_args="{}")}
         else:
             yield "You are usr_1."
 
@@ -51,5 +51,5 @@ async def test_a_run_prints_the_models_thinking_before_its_tool_call(capsys):
     await run_and_print(agent, "who am i")
 
     out = capsys.readouterr().out
-    assert out.index("I should check who is signed in.") < out.index("→ user_identity_get")
-    assert out.index("→ user_identity_get") < out.index("You are usr_1.")
+    assert out.index("I should check who is signed in.") < out.index("→ account_get")
+    assert out.index("→ account_get") < out.index("You are usr_1.")

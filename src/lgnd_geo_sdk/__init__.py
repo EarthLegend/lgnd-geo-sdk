@@ -10,7 +10,7 @@ To call the tools from code, without an agent:
 from lgnd_geo_sdk import client
 
 async with client() as geo:
-    result = await geo.call_tool("user_identity_get", {})
+    result = await geo.call_tool("account_get", {})
 ```
 """
 

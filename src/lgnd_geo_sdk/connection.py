@@ -507,7 +507,7 @@ def client(url: str | None = None, *, token_directory: str | Path | None = None)
     Example:
         ```python
         async with client() as geo:
-            result = await geo.call_tool("user_identity_get", {})
+            result = await geo.call_tool("account_get", {})
             print(result.content[0].text)
         ```
     """

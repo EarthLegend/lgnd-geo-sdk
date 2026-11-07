@@ -39,7 +39,7 @@ SPRINGFIELD = {"lat": 39.8, "lon": -89.65, "radius_km": 50}
 async def main() -> None:
     async with client() as geo:
         result = await geo.call_tool(
-            "search_place_find", {"index": "naip", "text": "solar farm", "area": SPRINGFIELD}
+            "index_search", {"text": "solar farm", "scope": {"index": "naip", "area": SPRINGFIELD}}
         )
         print(result.content[0].text)
 
