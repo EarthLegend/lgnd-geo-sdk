@@ -26,13 +26,13 @@ Issues = "https://github.com/EarthLegend/lgnd-geo-sdk/issues"
 
 [project.optional-dependencies]
 pydantic-ai = [
-    "pydantic-ai-slim[mcp]>=2.52.0",
+    "pydantic-ai-slim[mcp]>=2.53.0",
 ]
 
 [dependency-groups]
 dev = [
     "fastmcp-slim[server]>=4.0.10",
-    "pydantic-ai-slim[anthropic,mcp]>=2.52.0",
+    "pydantic-ai-slim[anthropic,mcp]>=2.53.0",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
